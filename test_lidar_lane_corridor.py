@@ -16,16 +16,17 @@ LidarObstacleDetector를 그대로 재사용하므로(판정 기준이 서로 �
 사용법:
   1. 차량을 트랙(또는 아무 바닥) 위에 놓고 이 스크립트를 실행합니다.
   2. 물체(손, 상자 등)를 차량 정면의 여러 위치에 놓아 봅니다.
-       - 내 차선 중앙(정면, lateral≈0)
-       - 내 차선 경계 근처(lateral≈±340mm, LIDAR_LANE_WIDTH_MM의 절반)
-       - 옆 1차선(lateral≈±680mm 이상)
+       - 차선 중앙(정면, lateral≈0) -> OUT이어야 함 (사람이 지나갈 수 있는 구간)
+       - 장애물 예상 구간 안(lateral 절대값 150~230mm) -> IN이어야 함
+       - 차선 가장자리 근처(lateral≈±340mm) -> OUT이어야 함 (사람이 서 있을 수 있는 구간)
+       - 옆 1차선(lateral≈±680mm 이상) -> OUT이어야 함
      동시에 여러 거리(가까이/멀리)에서도 테스트해보세요 — 코리더 방식은
      거리가 달라져도 lateral 판정 기준이 바뀌지 않아야 정상입니다.
   3. 콘솔에 매 스캔 "DETECT/clear"(연속 확정 여부), 감지범위 안 가장
      가까운 점의 lateral(횡방향)/forward(전방)/distance(직선거리), 그리고
-     "IN"(내 차선 안)/"OUT"(내 차선 밖)이 계속 출력됩니다. 차선 경계에
-     물체를 놓고 lateral이 ±340mm 근처를 지날 때 IN/OUT이 정확히
-     뒤집히는지 확인하세요.
+     "IN"(장애물 예상 구간 안)/"OUT"(그 밖, 중앙이든 가장자리든)이 계속
+     출력됩니다. lateral 절대값이 150mm/230mm 경계를 지날 때 IN/OUT이
+     정확히 뒤집히는지 확인하세요.
   4. Ctrl+C로 종료합니다(라이다 모터가 자동으로 정지합니다).
 """
 
@@ -40,11 +41,11 @@ PRINT_INTERVAL_SECONDS = 0.1
 
 
 def main():
-    half_width = cfg.LIDAR_LANE_WIDTH_MM * 0.5
     print(
         f"LIDAR_FRONT_ANGLE={cfg.LIDAR_FRONT_ANGLE:.1f}도, "
-        f"LIDAR_LANE_WIDTH_MM={cfg.LIDAR_LANE_WIDTH_MM:.0f}mm "
-        f"(좌우 ±{half_width:.0f}mm), "
+        f"장애물 예상 구간(LIDAR_OBSTACLE_LATERAL_MIN/MAX_MM)="
+        f"{cfg.LIDAR_OBSTACLE_LATERAL_MIN_MM:.0f}~"
+        f"{cfg.LIDAR_OBSTACLE_LATERAL_MAX_MM:.0f}mm, "
         f"감지거리={cfg.LIDAR_DETECT_MIN_DISTANCE_MM:.0f}~"
         f"{cfg.LIDAR_DETECT_MAX_DISTANCE_MM:.0f}mm"
     )
