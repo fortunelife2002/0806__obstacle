@@ -404,9 +404,10 @@ LIDAR_FRONT_ANGLE = 0.0
 # 오프셋 가정을 함께 고쳐야 합니다.
 LIDAR_LANE_WIDTH_MM = 680.0
 
-# 1m 30cm 이내만 "장애물"로 판단합니다. 라이다 값은 mm 단위입니다.
+# [2026-08-06 Claude 수정] "장애물을 1m 앞부터 보고 반응해야 한다"는
+# 요구사항에 맞춰 1300 -> 1000으로 낮췄습니다. 라이다 값은 mm 단위입니다.
 LIDAR_DETECT_MIN_DISTANCE_MM = 50.0
-LIDAR_DETECT_MAX_DISTANCE_MM = 1300.0
+LIDAR_DETECT_MAX_DISTANCE_MM = 1000.0
 
 # 노이즈로 인한 오검출을 막기 위해, 연속 스캔에서 이 횟수 이상 감지되어야
 # "장애물 있음"으로 확정합니다.
