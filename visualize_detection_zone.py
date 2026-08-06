@@ -60,17 +60,13 @@ def main():
         (-lane_half, 0), 2 * lane_half, y_max,
         color="#1f77b4", alpha=0.15, zorder=0, label="2차선 (우리 차선)"
     ))
-    # 실제 장애물 감지 구간 (좌우 대칭이므로 -max~-min, +min~+max 두 조각)
-    for sign in (+1, -1):
-        lo = sign * obstacle_min if sign > 0 else sign * obstacle_max
-        hi = sign * obstacle_max if sign > 0 else sign * obstacle_min
-        width = hi - lo
-        if abs(width) < 1e-6:
-            continue
-        ax.add_patch(plt.Rectangle(
-            (lo, dist_min), width, dist_max - dist_min,
-            color="#d62728", alpha=0.55, zorder=2,
-        ))
+    # 실제 장애물 감지 구간 (트랙 좌표 40~64cm -> lateral min~max)
+    ax.add_patch(plt.Rectangle(
+        (obstacle_min, dist_min),
+        obstacle_max - obstacle_min,
+        dist_max - dist_min,
+        color="#d62728", alpha=0.55, zorder=2,
+    ))
 
     # 차선 경계선들
     for x, style, label in (
@@ -101,10 +97,10 @@ def main():
 
     # 감지구간 네 모서리로 향하는 각도 표시 (거리에 따라 각도가 달라짐을 시각화)
     corners = [
+        (obstacle_min, dist_min),
+        (obstacle_min, dist_max),
         (obstacle_max, dist_min),
         (obstacle_max, dist_max),
-        (-obstacle_max, dist_min),
-        (-obstacle_max, dist_max),
     ]
     for x, y in corners:
         angle_deg = np.degrees(np.arctan2(x, y))
@@ -122,7 +118,9 @@ def main():
     ax.set_ylabel("forward (mm, 차량 전방)")
     ax.set_title(
         "라이다 장애물 감지 코리더 (탑뷰)\n"
-        f"감지구간: |lateral| {obstacle_min:.0f}~{obstacle_max:.0f}mm, "
+        f"감지구간: 트랙 {cfg.LIDAR_OBSTACLE_TRACK_MIN_CM:.0f}~"
+        f"{cfg.LIDAR_OBSTACLE_TRACK_MAX_CM:.0f}cm "
+        f"(lateral {obstacle_min:.0f}~{obstacle_max:.0f}mm), "
         f"거리 {dist_min:.0f}~{dist_max:.0f}mm"
     )
     ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), fontsize=8, framealpha=0.9)
@@ -133,9 +131,11 @@ def main():
     print(f"저장 완료: {OUTPUT_PATH}")
     print(
         f"참고: 가까운 모서리({dist_min:.0f}mm)의 각도는 "
-        f"±{np.degrees(np.arctan2(obstacle_max, dist_min)):.1f}도, "
+        f"{np.degrees(np.arctan2(obstacle_min, dist_min)):+.1f}~"
+        f"{np.degrees(np.arctan2(obstacle_max, dist_min)):+.1f}도, "
         f"먼 모서리({dist_max:.0f}mm)의 각도는 "
-        f"±{np.degrees(np.arctan2(obstacle_max, dist_max)):.1f}도로 서로 다릅니다 — "
+        f"{np.degrees(np.arctan2(obstacle_min, dist_max)):+.1f}~"
+        f"{np.degrees(np.arctan2(obstacle_max, dist_max)):+.1f}도로 서로 다릅니다 — "
         "이게 바로 각도창 대신 좌우 폭 코리더 방식을 쓴 이유입니다."
     )
 

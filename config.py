@@ -445,17 +445,19 @@ LIDAR_FRONT_ANGLE = 0.0
 # 않고, 아래 LIDAR_OBSTACLE_LATERAL_*_MM을 정하기 위한 참고 치수입니다.
 LIDAR_LANE_WIDTH_MM = 340.0
 
-# 실제 장애물은 트랙 전체 좌표 기준 46~56cm 구간(2차선 중앙 51cm에서
-# ±5cm)에 놓입니다. lateral(라이다 기준, 차량 중앙=0mm)로 환산하면
-# 46cm->-50mm, 56cm->+50mm이므로 원래는 |lateral|<=50mm만 봤는데,
-# 실차에서 "장애물이 눈앞에 와서야 감지된다"(먼 거리에서 못 잡음)는
-# 문제가 있어 80mm로 넓혔습니다. 차가 차선 안에서 살짝 좌우로 흔들리거나
-# 장애물이 완벽히 정중앙이 아니면, 거리가 멀수록 좁은 밴드(±50mm)를
-# 벗어나기 쉬워서 가까워져야만 잡혔던 것으로 보입니다. 그래도 여전히
-# 감지 안 되거나 옆 차선(사람 등)을 오검출하면 이 값을 다시 조정하세요.
-# 부호(좌/우)는 가리지 않고 절대값으로 판정합니다.
-LIDAR_OBSTACLE_LATERAL_MIN_MM = 0.0
-LIDAR_OBSTACLE_LATERAL_MAX_MM = 80.0
+# 트랙 전체 좌표(안쪽 0cm / 중앙선 34cm / 바깥 68cm) 기준으로 감지할
+# 횡방향 구간입니다. 2차선 중앙(차량 정중앙)은 트랙 51cm이고, lateral
+# (라이다 기준 mm)는 (트랙_cm - 51) * 10 으로 환산합니다.
+# 예: 40cm -> -110mm, 64cm -> +130mm
+LIDAR_TRACK_LANE2_CENTER_CM = 51.0
+LIDAR_OBSTACLE_TRACK_MIN_CM = 40.0
+LIDAR_OBSTACLE_TRACK_MAX_CM = 64.0
+LIDAR_OBSTACLE_LATERAL_MIN_MM = (
+    LIDAR_OBSTACLE_TRACK_MIN_CM - LIDAR_TRACK_LANE2_CENTER_CM
+) * 10.0
+LIDAR_OBSTACLE_LATERAL_MAX_MM = (
+    LIDAR_OBSTACLE_TRACK_MAX_CM - LIDAR_TRACK_LANE2_CENTER_CM
+) * 10.0
 
 # 1m 50cm 이내만 "장애물"로 판단합니다. 라이다 값은 mm 단위입니다.
 LIDAR_DETECT_MIN_DISTANCE_MM = 50.0

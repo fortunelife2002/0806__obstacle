@@ -13,10 +13,9 @@
    장애물까지 잡으면 안 됩니다. 정면 기준 "각도창"만으로는 두 차선이
    원근 때문에 거리가 멀어질수록 각도차가 좁아져(소실점 효과) 구분이
    안 되므로, 라이다 점을 차량 진행축 기준 직교좌표로 바꿔 판정합니다
-   (_hit_in_lane_corridor). 실제 장애물은 항상 차량 중앙(=우리 차선
-   중앙으로 가정) 기준 좌우 50mm 이내에만 놓이므로, "횡방향 거리가 그
-   범위 안인가"로 좁혀서 판정해 사람 등 다른 물체를 장애물로 오검출하는
-   걸 막습니다.
+   (_hit_in_lane_corridor). 실제 장애물은 트랙 전체 좌표 기준 40~64cm
+   구간에 놓이므로, lateral(mm)로 환산한 그 범위 안인지로 판정해 사람 등
+   다른 물체를 장애물로 오검출하는 걸 막습니다.
 
 2) AvoidanceController
    감지 결과를 받아 실제 회피 기동을 관리하는 상태기계입니다.
@@ -115,15 +114,12 @@ class LidarObstacleDetector:
         return distance, lateral, forward
 
     def _hit_in_lane_corridor(self, scan):
-        """차량 진행축 기준 "장애물 예상 구간"(중앙에서 횡방향 0~50mm)
-        이내·전방 감지거리 이내에 점이 하나라도 있으면 (True, 디버그정보)를
-        반환합니다.
+        """차량 진행축 기준 "장애물 예상 구간"(트랙 40~64cm) 이내·전방
+        감지거리 이내에 점이 하나라도 있으면 (True, 디버그정보)를 반환합니다.
 
-        차선 전체 폭(±170mm)이 아니라 실제 장애물이 놓이는 좁은 구간만
-        보는 이유는, 트랙 주변에 있을 수 있는 사람 등 다른 물체를 장애물로
-        잘못 잡지 않기 위해서입니다. 부호(좌/우)는 가리지 않고 중앙에서의
-        절대 횡방향 거리만 보므로, 장애물이 차량 중앙 기준 어느 쪽으로
-        살짝 치우쳐 있어도 잡힙니다.
+        차선 전체 폭(±170mm)이 아니라 실제 장애물이 놓이는 구간만 보는
+        이유는, 트랙 주변에 있을 수 있는 사람 등 다른 물체를 장애물로 잘못
+        잡지 않기 위해서입니다.
 
         디버그정보는 감지거리 범위 안에서 가장 가까운 점의 lateral/
         forward/in_lane 여부입니다(실차에서 LIDAR_FRONT_ANGLE/
@@ -141,10 +137,9 @@ class LidarObstacleDetector:
             & (distance >= cfg.LIDAR_DETECT_MIN_DISTANCE_MM)
             & (distance <= cfg.LIDAR_DETECT_MAX_DISTANCE_MM)
         )
-        abs_lateral = np.abs(lateral)
         in_lane = (
-            (abs_lateral >= cfg.LIDAR_OBSTACLE_LATERAL_MIN_MM)
-            & (abs_lateral <= cfg.LIDAR_OBSTACLE_LATERAL_MAX_MM)
+            (lateral >= cfg.LIDAR_OBSTACLE_LATERAL_MIN_MM)
+            & (lateral <= cfg.LIDAR_OBSTACLE_LATERAL_MAX_MM)
         )
         hit = bool(np.any(in_range & in_lane))
 
@@ -202,8 +197,9 @@ class LidarObstacleDetector:
         LIDAR_FRONT_ANGLE(정면 각도)과 LIDAR_OBSTACLE_LATERAL_MIN/MAX_MM
         (장애물 예상 구간)이 실차에서 맞게 설정됐는지 화면으로 확인하는
         용도입니다: 예를 들어 실제 장애물을 놓을 위치에 물체를 놓고
-        lateral 절대값이 50mm 이내에서 in_lane이 True로 나오는지 보면
-        됩니다. 범위 안에 점이 없거나 라이다가 비활성/통신 끊김이면
+        lateral이 LIDAR_OBSTACLE_LATERAL_MIN/MAX_MM 범위 안에서 in_lane이
+        True로 나오는지 보면 됩니다. 범위 안에 점이 없거나 라이다가
+        비활성/통신 끊김이면
         None을 반환합니다.
         """
         if not cfg.LIDAR_ENABLED or self._lidar is None:
