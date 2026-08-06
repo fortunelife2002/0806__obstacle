@@ -471,8 +471,16 @@ AVOID_STEER_OFFSET = 35
 # 바꾸세요. RETURN 구간은 이 부호를 자동으로 반대로 적용합니다.
 AVOID_LANE_DIRECTION = 1
 
+# [2026-08-06 Claude 수정] AVOID_HOLD_SECONDS: 차량 길이 110cm + 장애물
+# 길이 110cm(우리 차와 동일한 차량)를 더하면 약 220cm를 다 지나가야
+# 안전합니다. AVOID_SPEED(100)에서 실제 mm/s를 정확히 측정하지 못해서,
+# 우선 "차로 변경을 완전히 마친 뒤 3초 직진"으로 잡아 시작합니다(실측
+# 속도가 없어 정밀 계산이 아닌 추정치입니다). 실차에서 처음엔 넉넉하게
+# 두고, 장애물을 확실히 다 지난 뒤 복귀하는지 보면서 필요하면 줄이세요
+# (너무 짧으면 차 뒷부분이 장애물에 걸린 채로 복귀 조향을 시작하게
+# 됩니다).
 AVOID_OUT_SECONDS = 1.4
-AVOID_HOLD_SECONDS = 1.0
+AVOID_HOLD_SECONDS = 3.0
 AVOID_RETURN_SECONDS = 1.4
 AVOID_SPEED = 100
 
