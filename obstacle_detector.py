@@ -241,6 +241,7 @@ class AvoidanceController:
     def __init__(self):
         self._current_offset = 0.0
         self._was_detected = False
+        self._toggle_hold_until = 0.0
 
     @property
     def state(self):
@@ -253,21 +254,28 @@ class AvoidanceController:
         obstacle_detected가 이전 프레임엔 False였다가 이번 프레임 True로
         바뀐 "상승 에지"에서만 토글합니다 — 같은 장애물이 여러 프레임
         연속으로 감지돼도 한 번만 반응하고, 그 장애물을 계속 볼 때마다
-        매번 반대쪽으로 토글하는 걸 막습니다.
+        매번 반대쪽으로 토글하는 걸 막습니다. AVOID_TOGGLE_HOLD_SECONDS
+        동안은 감지가 잠깐 끊겼다 다시 잡혀도 토글을 막아 차선 변경
+        도중 목표가 원위치로 돌아가는 것을 방지합니다.
         """
+        now = time.monotonic()
         if obstacle_detected and not self._was_detected:
-            self._current_offset = (
-                0.0
-                if self._current_offset != 0.0
-                else cfg.AVOID_LANE_OFFSET_LANES
-            )
-            lane_controller.set_lane_offset(self._current_offset)
-            target = "옆" if self._current_offset != 0.0 else "원래"
-            print(
-                "AVOID_TOGGLE: 내 차선 전방 "
-                f"{cfg.LIDAR_DETECT_MAX_DISTANCE_MM:.0f}mm 이내 장애물 감지, "
-                f"{target} 차선을 목표로 옮깁니다(카메라가 계속 보정)."
-            )
+            if now >= self._toggle_hold_until:
+                self._current_offset = (
+                    0.0
+                    if self._current_offset != 0.0
+                    else cfg.AVOID_LANE_OFFSET_LANES
+                )
+                lane_controller.set_lane_offset(self._current_offset)
+                self._toggle_hold_until = (
+                    now + cfg.AVOID_TOGGLE_HOLD_SECONDS
+                )
+                target = "옆" if self._current_offset != 0.0 else "원래"
+                print(
+                    "AVOID_TOGGLE: 내 차선 전방 "
+                    f"{cfg.LIDAR_DETECT_MAX_DISTANCE_MM:.0f}mm 이내 장애물 감지, "
+                    f"{target} 차선을 목표로 옮깁니다(카메라가 계속 보정)."
+                )
         self._was_detected = obstacle_detected
 
     def finalize_frame(self, lane_command):

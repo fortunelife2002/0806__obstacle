@@ -114,6 +114,7 @@ def draw_status(frame, lane_result, command, fps, obstacle_detected, lidar_debug
             f"OUT:{command.get('sent_speed', command['speed'])} "
             f"STR:{command['steering']} "
             f"OFS:{lane_result.get('lane_offset_lanes', 0.0):.1f} "
+            f"OW:{lane_result.get('offset_lane_width_px', 0.0):.0f} "
             f"SIDE:{lane_result.get('left_boundary_side') or '-'} "
             f"MODE:{command['reason']} FPS:{fps:.1f}"
         ),
@@ -235,6 +236,7 @@ def main():
                     f"output={command.get('sent_speed', command['speed'])} "
                     f"steer={command['steering']} "
                     f"offset={lane_result.get('lane_offset_lanes', 0.0):.1f} "
+                    f"offset_w={lane_result.get('offset_lane_width_px', 0.0):.0f} "
                     f"lidar={'DETECT' if obstacle_detected else 'clear'} "
                     + (
                         f"lat={lidar_debug['lateral']:.0f} "

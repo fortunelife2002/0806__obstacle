@@ -447,6 +447,95 @@ class LaneController:
         ])
         return np.polyfit(y_values, widths, 1)
 
+    def _offset_lane_width_px(self, width, right_item=None, left_item=None):
+        """회피 시 목표를 옆 차선으로 옮길 때 쓸 차선 폭(픽셀)을 구합니다.
+
+        학습 폭 모델만 쓰면 WIDTH_MODEL_NEAR_MIN(280px) 등으로 실제보다
+        작게 잡혀 차선 변경이 끝까지 안 되는 경우가 있어, 이번 프레임에
+        보이는 오른쪽/양쪽 경계 측정값과 기본 밴드 폭 중 가장 큰 값을
+        사용합니다.
+        """
+        width_model = (
+            self.width_coefficients
+            if self.width_coefficients is not None
+            else self._default_width_model(width)
+        )
+        model_width = clamp(
+            float(np.polyval(
+                width_model, cfg.CONTROL_Y_RATIOS[0]
+            )) * width,
+            scale_x(cfg.TRACK_MIN_LANE_WIDTH, width),
+            min(scale_x(cfg.TRACK_MAX_LANE_WIDTH, width), width * 0.985),
+        )
+        candidates = [
+            model_width,
+            scale_x(cfg.LANE_BANDS[0]["width"], width),
+        ]
+        if right_item is not None:
+            candidates.append(float(right_item["lane_width"]))
+        if (
+            right_item is not None
+            and left_item is not None
+            and not left_item.get("inferred_boundary", False)
+        ):
+            candidates.append(
+                float(right_item["right"] - left_item["left"])
+            )
+        return max(candidates)
+
+    def _boundary_items_at_control(self, height, width, measurements, status):
+        """제어 기준 높이(CONTROL_Y_RATIOS[0])에서 가장 가까운 좌우 경계를
+        고릅니다. 회피 오프셋 폭 계산과 guard 계산에서 같은 항목을 씁니다.
+        """
+        target_y = height * cfg.CONTROL_Y_RATIOS[0]
+        maximum_y_gap = height * cfg.BOUNDARY_GUARD_MAX_Y_GAP_RATIO
+        right_values = [
+            item for item in measurements if item["right"] is not None
+        ]
+        left_values = [
+            item for item in measurements if item["left"] is not None
+        ]
+        if status == "MEMORY":
+            right_values = []
+            left_values = []
+        elif status == "SINGLE_LEFT" and not right_values:
+            right_values = [
+                {
+                    **item,
+                    "right": item["left"] + item["lane_width"],
+                    "inferred_boundary": True,
+                }
+                for item in left_values
+            ]
+        elif status == "SINGLE_RIGHT" and not left_values:
+            left_values = [
+                {
+                    **item,
+                    "left": item["right"] - item["lane_width"],
+                    "inferred_boundary": True,
+                }
+                for item in right_values
+            ]
+
+        right_item = None
+        if right_values:
+            candidate = min(
+                right_values,
+                key=lambda item: abs(item["y"] - target_y),
+            )
+            if abs(candidate["y"] - target_y) <= maximum_y_gap:
+                right_item = candidate
+
+        left_item = None
+        if left_values:
+            candidate = min(
+                left_values,
+                key=lambda item: abs(item["y"] - target_y),
+            )
+            if abs(candidate["y"] - target_y) <= maximum_y_gap:
+                left_item = candidate
+        return right_item, left_item
+
     @staticmethod
     def _width_tolerance(predicted_width, width):
         return max(
@@ -1258,6 +1347,10 @@ class LaneController:
         near_target = scale_x(
             cfg.CONTROL_TARGET_X[0] + curve_margin, width
         )
+        right_item, left_item = self._boundary_items_at_control(
+            height, width, measurements, status
+        )
+        offset_lane_width_px = 0.0
         # 오프셋을 적용하기 전, "평소 정면 기준선"을 따로 기억해둡니다.
         # 회피 중 왼쪽 점선이 이 기준선 왼쪽/오른쪽 중 어디 있는지로
         # "점선을 넘었는지"를 판정하는 데 씁니다(오프셋이 걸린 near_target
@@ -1265,31 +1358,15 @@ class LaneController:
         # 일관된 판정이 됩니다).
         vehicle_center_x = near_target
         if self._lane_offset_lanes != 0.0:
-            # 장애물 회피 중: 목표 위치를 학습된(또는 기본) 차선 폭만큼
-            # 옆으로 옮깁니다. 아래에서 계산하는 right_clearance/
-            # left_clearance/hard_boundary 등은 모두 이 near_target을
-            # 기준으로 다시 계산되므로, 실제 검출 로직은 하나도 안
-            # 바꿔도 회피 중에는 자동으로 "옆 차선 중앙"을 목표로
-            # 삼게 되고 경계 보호 로직도 그 새 목표 기준으로 계속
-            # 작동합니다(예: 아직 옆 차선에 못 들어갔으면 지금 추적
-            # 중인 선과의 거리가 비정상적으로 좁게 계산되어 guard/
-            # hard_boundary가 오히려 회피 방향으로 더 밀어줍니다).
-            offset_width_model = (
-                self.width_coefficients
-                if self.width_coefficients is not None
-                else self._default_width_model(width)
-            )
-            offset_lane_width = clamp(
-                float(np.polyval(
-                    offset_width_model, cfg.CONTROL_Y_RATIOS[0]
-                )) * width,
-                scale_x(cfg.TRACK_MIN_LANE_WIDTH, width),
-                min(scale_x(cfg.TRACK_MAX_LANE_WIDTH, width), width * 0.985),
+            # 장애물 회피 중: 목표 위치를 차선 폭 한 칸만큼 옆으로 옮깁니다.
+            # 폭은 학습 모델·실측 경계·기본 밴드 중 가장 큰 값을 씁니다.
+            offset_lane_width_px = self._offset_lane_width_px(
+                width, right_item, left_item
             )
             near_target += (
                 cfg.AVOID_LANE_DIRECTION
                 * self._lane_offset_lanes
-                * offset_lane_width
+                * offset_lane_width_px
             )
         near_error = float(
             (path_x[0] - near_target) * cfg.REFERENCE_WIDTH / width
@@ -1340,61 +1417,6 @@ class LaneController:
         else:
             # MEMORY에서는 오래된 먼 경로로 계속 꺾지 않습니다.
             preview_weight = 0.0
-
-        target_y = height * cfg.CONTROL_Y_RATIOS[0]
-        maximum_y_gap = (
-            height * cfg.BOUNDARY_GUARD_MAX_Y_GAP_RATIO
-        )
-        right_values = [
-            item for item in measurements if item["right"] is not None
-        ]
-        left_values = [
-            item for item in measurements if item["left"] is not None
-        ]
-        if status == "MEMORY":
-            # 경로 검사에서 탈락한 현재 프레임의 경계점으로 강제 조향하지
-            # 않고, 아래의 중립 복귀 동작만 사용합니다.
-            right_values = []
-            left_values = []
-        elif status == "SINGLE_LEFT" and not right_values:
-            # 왼쪽 선만 보일 때 학습 폭으로 오른쪽 경계를 추정합니다.
-            # 추정 경계는 soft 보정에만 사용하고 강제 조향에는 쓰지 않습니다.
-            right_values = [
-                {
-                    **item,
-                    "right": item["left"] + item["lane_width"],
-                    "inferred_boundary": True,
-                }
-                for item in left_values
-            ]
-        elif status == "SINGLE_RIGHT" and not left_values:
-            # 오른쪽 선만 보일 때도 왼쪽 안전여유를 대칭으로 계산합니다.
-            left_values = [
-                {
-                    **item,
-                    "left": item["right"] - item["lane_width"],
-                    "inferred_boundary": True,
-                }
-                for item in right_values
-            ]
-
-        right_item = None
-        if right_values:
-            candidate = min(
-                right_values,
-                key=lambda item: abs(item["y"] - target_y),
-            )
-            if abs(candidate["y"] - target_y) <= maximum_y_gap:
-                right_item = candidate
-
-        left_item = None
-        if left_values:
-            candidate = min(
-                left_values,
-                key=lambda item: abs(item["y"] - target_y),
-            )
-            if abs(candidate["y"] - target_y) <= maximum_y_gap:
-                left_item = candidate
 
         near_right = None
         right_guard = 0.0
@@ -1886,6 +1908,7 @@ class LaneController:
             hard_boundary = 0
             left_anchor_error = 0.0
             left_boundary_side = None
+            offset_lane_width_px = 0.0
             steering = self.previous_steer
             # 최초 차선 확인 전 또는 메모리 허용시간 이후에는 출발하지 않습니다.
             speed = 0
@@ -1923,6 +1946,7 @@ class LaneController:
             "single_lane_frames": self.single_lane_frames,
             "width_model_age": self.width_model_age,
             "lane_offset_lanes": self._lane_offset_lanes,
+            "offset_lane_width_px": offset_lane_width_px,
             "left_boundary_side": left_boundary_side,
             "confidence": confidence,
             "control_x": control_x,
