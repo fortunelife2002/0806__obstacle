@@ -377,7 +377,7 @@ PRINT_INTERVAL = 10
 # 아두이노/카메라와 별개로 라이다만 연결하는 시리얼 포트입니다.
 # 장치관리자(윈도우) 또는 `python -m serial.tools.list_ports`로 확인하세요.
 LIDAR_ENABLED = True
-LIDAR_PORT = "COM5"
+LIDAR_PORT = "COM3"
 
 # 라이다 스캔 각도 중 "차량 정면"에 해당하는 값(도)입니다. 라이다 장착
 # 방향에 따라 다르므로 반드시 calibrate_lidar_angle.py로 실차에서 먼저
