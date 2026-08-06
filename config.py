@@ -471,6 +471,16 @@ AVOID_STEER_OFFSET = 35
 # 바꾸세요. RETURN 구간은 이 부호를 자동으로 반대로 적용합니다.
 AVOID_LANE_DIRECTION = 1
 
+# [2026-08-06 Claude 수정] AVOID_OUT_SECONDS: 실차 테스트(2026-08-06)에서
+# 1.4초로는 AVOID_HOLD로 넘어갈 때 아직 1차선에 확실히 안 들어간 채로
+# 직진을 시작하는 문제를 확인해서 4.0초로 늘렸습니다. 이 값은 "얼마나
+# 옆으로 이동했나"뿐 아니라 "얼마나 회전했나"(헤딩)에도 그대로 비례하는
+# 값이라(같은 조향각을 그 시간만큼 계속 유지), 너무 늘리면 이번엔
+# 지나치게 많이 돌아버릴 위험이 있습니다. 실차에서 AVOID_HOLD 시작
+# 시점에 차가 1차선에 헤딩까지 자연스럽게 들어가 있는지 꼭 다시
+# 확인하세요.
+AVOID_OUT_SECONDS = 4.0
+
 # [2026-08-06 Claude 수정] AVOID_HOLD_SECONDS: 차량 길이 110cm + 장애물
 # 길이 110cm(우리 차와 동일한 차량)를 더하면 약 220cm를 다 지나가야
 # 안전합니다. AVOID_SPEED(100)에서 실제 mm/s를 정확히 측정하지 못해서,
@@ -479,8 +489,12 @@ AVOID_LANE_DIRECTION = 1
 # 두고, 장애물을 확실히 다 지난 뒤 복귀하는지 보면서 필요하면 줄이세요
 # (너무 짧으면 차 뒷부분이 장애물에 걸린 채로 복귀 조향을 시작하게
 # 됩니다).
-AVOID_OUT_SECONDS = 1.4
 AVOID_HOLD_SECONDS = 3.0
+
+# AVOID_RETURN_SECONDS는 아직 AVOID_OUT_SECONDS 변경 전 값(1.4초) 그대로
+# 입니다. OUT을 4.0초로 늘렸다고 RETURN도 자동으로 늘어나지 않으니,
+# OUT/HOLD 동작이 실차에서 확인되면 RETURN도 따로 튜닝하세요(대칭이라고
+# 가정할 근거가 아직 없습니다).
 AVOID_RETURN_SECONDS = 1.4
 AVOID_SPEED = 100
 
