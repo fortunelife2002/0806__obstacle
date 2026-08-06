@@ -39,9 +39,19 @@ def main():
                 scan, 0, CALIBRATION_MAX_DISTANCE_MM
             )
             if len(nearby) == 0:
+                # CALIBRATION_MAX_DISTANCE_MM(=600mm)은 라이다 하드웨어의
+                # 최대 측정거리가 아니라 이 스크립트가 "내가 놓은 물체"만
+                # 보려고 정한 탐색 반경입니다. 여기 안 잡힌다고 라이다가
+                # 고장난 건 아니니, 지금 실제로 라이다가 보고 있는 가장
+                # 가까운 점이 얼마나 먼지 참고로 같이 보여줍니다.
+                overall_closest = scan[scan[:, 1].argmin()]
+                overall_angle = float(overall_closest[0])
+                overall_distance = float(overall_closest[1])
                 print(
                     f"{CALIBRATION_MAX_DISTANCE_MM}mm 이내에 아무것도 "
-                    "없습니다... 물체를 좀 더 가까이 놓아보세요."
+                    "없습니다... 물체를 좀 더 가까이(30~50cm) 놓아보세요. "
+                    f"(참고: 지금 가장 가까운 점은 각도={overall_angle:6.1f}도 "
+                    f"거리={overall_distance:6.0f}mm)"
                 )
                 continue
 
