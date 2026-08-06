@@ -1258,6 +1258,12 @@ class LaneController:
         near_target = scale_x(
             cfg.CONTROL_TARGET_X[0] + curve_margin, width
         )
+        # 오프셋을 적용하기 전, "평소 정면 기준선"을 따로 기억해둡니다.
+        # 회피 중 왼쪽 점선이 이 기준선 왼쪽/오른쪽 중 어디 있는지로
+        # "점선을 넘었는지"를 판정하는 데 씁니다(오프셋이 걸린 near_target
+        # 이 아니라 이 고정 기준으로 비교해야 오프셋 크기와 무관하게
+        # 일관된 판정이 됩니다).
+        vehicle_center_x = near_target
         if self._lane_offset_lanes != 0.0:
             # 장애물 회피 중: 목표 위치를 학습된(또는 기본) 차선 폭만큼
             # 옆으로 옮깁니다. 아래에서 계산하는 right_clearance/
@@ -1620,6 +1626,22 @@ class LaneController:
             preview_error,
             signed_curvature,
         ])
+        # [2026-08-06 Claude 추가] 회피 중 "점선(왼쪽 경계)을 넘었는지"를
+        # 판정하기 위해, 지금 보이는 왼쪽 경계가 평소 정면 기준선의 왼쪽/
+        # 오른쪽 중 어디 있는지를 남깁니다. left_item이 이번 프레임에 안
+        # 보이거나, 실제로 관측된 선이 아니라 "오른쪽 선 - 학습 폭"으로
+        # 추정만 한 값(inferred_boundary)이면 None(판정 보류)입니다 —
+        # 추정값은 정의상 항상 오른쪽 기준보다 왼쪽에 나오게 계산되므로
+        # (right - width), 실제로 선을 넘었는지와 무관하게 항상 LEFT로
+        # 잘못 나올 수 있습니다.
+        if left_item is not None and not left_item.get(
+            "inferred_boundary", False
+        ):
+            left_boundary_side = (
+                "LEFT" if left_item["left"] < vehicle_center_x else "RIGHT"
+            )
+        else:
+            left_boundary_side = None
         return (
             raw_error,
             heading_error,
@@ -1637,6 +1659,7 @@ class LaneController:
             corridor_steer,
             hard_boundary,
             left_anchor_error,
+            left_boundary_side,
         )
 
     def update(self, frame):
@@ -1740,6 +1763,7 @@ class LaneController:
                 corridor_steer,
                 hard_boundary,
                 left_anchor_error,
+                left_boundary_side,
             ) = self._calculate_control(
                 height, width, measurements, status
             )
@@ -1861,6 +1885,7 @@ class LaneController:
             corridor_steer = 0.0
             hard_boundary = 0
             left_anchor_error = 0.0
+            left_boundary_side = None
             steering = self.previous_steer
             # 최초 차선 확인 전 또는 메모리 허용시간 이후에는 출발하지 않습니다.
             speed = 0
@@ -1898,6 +1923,7 @@ class LaneController:
             "single_lane_frames": self.single_lane_frames,
             "width_model_age": self.width_model_age,
             "lane_offset_lanes": self._lane_offset_lanes,
+            "left_boundary_side": left_boundary_side,
             "confidence": confidence,
             "control_x": control_x,
             "control_errors": control_errors,

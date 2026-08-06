@@ -114,6 +114,7 @@ def draw_status(frame, lane_result, command, fps, obstacle_detected, lidar_debug
             f"OUT:{command.get('sent_speed', command['speed'])} "
             f"STR:{command['steering']} "
             f"OFS:{lane_result.get('lane_offset_lanes', 0.0):.1f} "
+            f"SIDE:{lane_result.get('left_boundary_side') or '-'} "
             f"MODE:{command['reason']} FPS:{fps:.1f}"
         ),
         (8, 86),
@@ -195,7 +196,9 @@ def main():
 
             lane_result = lane_controller.update(frame)
             lane_command = resolve_drive_command(lane_result)
-            command, reason = avoidance.finalize_frame(lane_command)
+            command, reason = avoidance.finalize_frame(
+                lane_command, lane_result, lane_controller
+            )
             command["reason"] = reason
             command["sent_speed"] = hardware.drive(
                 command["speed"], command["steering"]
