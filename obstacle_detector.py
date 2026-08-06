@@ -20,18 +20,20 @@
    걸 막습니다.
 
 2) AvoidanceController
-   감지 결과를 받아 실제 회피 기동을 관리하는 상태기계입니다. 카메라
-   차선 인식 결과를 잠깐 무시하고 오픈루프 조향/속도로 다음 세 구간을
-   순서대로 실행합니다.
+   감지 결과를 받아 실제 회피 기동을 관리하는 상태기계입니다.
 
-     OUT    : 1차선 방향으로 꺾어 차로를 변경합니다.
-     HOLD   : 조향을 중앙으로 돌리고 직진하며 장애물 옆을 통과합니다.
-     RETURN : OUT과 반대 방향으로 꺾어 다시 2차선으로 돌아옵니다.
+   [2026-08-06 Claude 수정 3] 예전에는 "정해진 각도로 정해진 시간만
+   꺾는" 오픈루프(카메라 무시) 방식으로 OUT/HOLD/RETURN 세 구간을
+   시간으로 관리했는데, 실차에서 각도/시간 조합이 너무 민감해
+   (조금만 오차가 나도 과회전하거나 못 미치는 문제 반복) 계속
+   재조정이 필요했습니다.
 
-   복귀가 끝나면 lane_controller의 이전 경로 기억을 지우고 일반 차선
-   추종으로 되돌립니다. 카메라 인식은 "지금 보이는 오른쪽 선을 기준
-   삼는" 상대적 방식이라, RETURN 없이 그냥 두면 1차선을 새 기준으로
-   착각하고 눌러앉게 됩니다.
+   지금은 조향을 직접 계산하지 않고, LaneController.set_lane_offset()
+   으로 "목표 차선을 옆으로 옮겨라"라고만 지시합니다. 실제 조향은
+   기존 카메라 차선 추종 PID가 매 프레임 계속 담당하므로, 옆 차선에
+   정확히 안착할 때까지 카메라 피드백이 계속 작동합니다(각도/시간을
+   따로 맞출 필요가 없어짐). 상태는 IDLE -> AVOIDING(오프셋 적용) ->
+   COOLDOWN(오프셋 해제, 재감지 무시) -> IDLE로 단순해졌습니다.
 """
 
 import threading
@@ -42,10 +44,6 @@ import numpy as np
 import Function_Library as fl
 
 import config as cfg
-
-
-def clamp(value, minimum, maximum):
-    return max(minimum, min(value, maximum))
 
 
 class LidarObstacleDetector:
@@ -221,81 +219,69 @@ class LidarObstacleDetector:
 
 
 class AvoidanceController:
-    """라이다 감지 결과로 "1차선 회피 -> 2차선 복귀" 기동을 관리하는 상태기계."""
+    """라이다 감지 결과로 카메라 기반 차선 오프셋 회피를 관리하는 상태기계.
+
+    조향은 직접 계산하지 않습니다 — LaneController.set_lane_offset()으로
+    목표 차선만 지시하고, 실제 조향은 매 프레임 카메라 차선 추종 PID가
+    계속 담당합니다. 그래서 이 클래스는 두 단계로 나눠 호출해야 합니다.
+
+      1) begin_frame(): lane_controller.update(frame) 하기 "전"에 호출.
+         상태 전이를 결정하고 필요하면 오프셋을 설정합니다.
+      2) finalize_frame(): lane_controller.update(frame) 하고 난 "후"에
+         호출. 최종 speed/steering과 디버그용 reason을 반환합니다.
+    """
 
     IDLE = "IDLE"
-    AVOID_OUT = "AVOID_OUT"
-    AVOID_HOLD = "AVOID_HOLD"
-    AVOID_RETURN = "AVOID_RETURN"
+    AVOIDING = "AVOIDING"
     COOLDOWN = "COOLDOWN"
 
     def __init__(self):
         self.state = self.IDLE
         self._state_until = 0.0
 
-    def _steer_command(self, direction_sign):
-        """direction_sign: +1이면 AVOID_LANE_DIRECTION 쪽(1차선)으로,
-        -1이면 그 반대쪽(2차선 복귀 방향)으로, 0이면 중앙(직진)으로
-        꺾은 명령을 반환합니다."""
-        target_steer = clamp(
-            cfg.STEER_CENTER
-            + direction_sign * cfg.AVOID_LANE_DIRECTION * cfg.AVOID_STEER_OFFSET,
-            cfg.STEER_RIGHT,
-            cfg.STEER_LEFT,
-        )
-        return {"speed": cfg.AVOID_SPEED, "steering": target_steer}
+    def begin_frame(self, obstacle_detected, lane_controller):
+        """카메라 처리 전에 매 프레임 호출합니다. 상태 전이만 담당합니다.
 
-    def update(self, obstacle_detected, lane_command, lane_controller):
-        """매 프레임 호출합니다.
-
-        Returns:
-            (command, reason): command는 {"speed", "steering"}, reason은
-            디버그 표시/로그용 문자열입니다.
+        각 조건을 elif가 아닌 개별 if로 검사해서, 같은 프레임 안에서
+        COOLDOWN -> IDLE -> (장애물 있으면) AVOIDING까지 연달아 전이될 수
+        있게 합니다(쿨다운이 끝나는 바로 그 프레임에 장애물이 여전히
+        있으면 한 프레임도 안 쉬고 바로 재감지하기 위함).
         """
         now = time.monotonic()
 
-        if self.state == self.AVOID_OUT:
-            if now >= self._state_until:
-                self.state = self.AVOID_HOLD
-                self._state_until = now + cfg.AVOID_HOLD_SECONDS
-                print("AVOID_HOLD: 1차선 진입 완료, 장애물 옆을 통과합니다.")
-            else:
-                return self._steer_command(+1), "AVOID_OUT"
+        if self.state == self.AVOIDING and now >= self._state_until:
+            self.state = self.COOLDOWN
+            self._state_until = now + cfg.AVOID_COOLDOWN_SECONDS
+            lane_controller.set_lane_offset(0.0)
+            print("AVOID_DONE: 2차선 목표로 복귀, 일반 차선 추종을 계속합니다.")
 
-        if self.state == self.AVOID_HOLD:
-            if now >= self._state_until:
-                self.state = self.AVOID_RETURN
-                self._state_until = now + cfg.AVOID_RETURN_SECONDS
-                print("AVOID_RETURN: 장애물 통과 완료, 2차선으로 복귀합니다.")
-            else:
-                return self._steer_command(0), "AVOID_HOLD"
+        if self.state == self.COOLDOWN and now >= self._state_until:
+            self.state = self.IDLE
 
-        if self.state == self.AVOID_RETURN:
-            if now >= self._state_until:
-                self.state = self.COOLDOWN
-                self._state_until = now + cfg.AVOID_COOLDOWN_SECONDS
-                # 2차선으로 돌아온 뒤에는 1차선 기준의 경로 기억이 오히려
-                # 방해가 되므로 지우고 새로 인식하게 합니다.
-                lane_controller.reset_tracking()
-                print("AVOID_DONE: 2차선 복귀 완료, 일반 차선 추종으로 복귀합니다.")
-            else:
-                return self._steer_command(-1), "AVOID_RETURN"
-
-        if self.state == self.COOLDOWN:
-            if now >= self._state_until:
-                self.state = self.IDLE
-            else:
-                return lane_command, "LANE_COOLDOWN"
-
-        # 여기 도달하면 state == IDLE 입니다.
-        if obstacle_detected:
-            self.state = self.AVOID_OUT
-            self._state_until = now + cfg.AVOID_OUT_SECONDS
+        if self.state == self.IDLE and obstacle_detected:
+            self.state = self.AVOIDING
+            self._state_until = now + cfg.AVOID_DURATION_SECONDS
+            lane_controller.set_lane_offset(cfg.AVOID_LANE_OFFSET_LANES)
             print(
                 "AVOID_START: 내 차선(2차선) 전방 "
                 f"{cfg.LIDAR_DETECT_MAX_DISTANCE_MM:.0f}mm 이내 장애물 감지, "
-                "1차선으로 회피합니다."
+                "옆 차선을 목표로 옮깁니다(카메라가 계속 보정)."
             )
-            return self._steer_command(+1), "AVOID_OUT"
 
+    def finalize_frame(self, lane_command):
+        """카메라 처리 후 매 프레임 호출합니다.
+
+        조향은 항상 lane_command(카메라 제어 결과, 이미 오프셋이 반영됨)를
+        그대로 씁니다. 회피 중에는 안전하게 속도만 제한합니다.
+
+        Returns:
+            (command, reason): command는 {"speed", "steering", ...},
+            reason은 디버그 표시/로그용 문자열입니다.
+        """
+        if self.state == self.AVOIDING:
+            command = dict(lane_command)
+            command["speed"] = min(command["speed"], cfg.AVOID_SPEED)
+            return command, "AVOIDING"
+        if self.state == self.COOLDOWN:
+            return lane_command, "LANE_COOLDOWN"
         return lane_command, "LANE"

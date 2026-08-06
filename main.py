@@ -7,9 +7,12 @@
 나중에 기능을 얹을 자리로 그대로 남겨뒀습니다.
 
 라이다 장애물 회피(obstacle_detector.py)는 차선 추종과 별개 레이어로
-추가했습니다: 매 프레임 lane_command를 먼저 계산한 뒤, AvoidanceController가
-필요할 때만 그 값을 덮어씁니다. 자세한 임계값/기동 파라미터는 config.py의
-"라이다 장애물 감지" / "장애물 회피" 섹션을 보세요.
+추가했습니다. [2026-08-06 Claude 수정 3] 이제 조향은 항상 카메라 차선
+추종(lane_controller)이 계산합니다 — AvoidanceController는 매 프레임
+카메라 처리 "전"에 먼저 호출해 필요하면 lane_controller에 차선 오프셋을
+지시하고(begin_frame), 카메라 처리 "후"에 다시 호출해 최종 속도/조향과
+로그용 reason을 받습니다(finalize_frame). 자세한 임계값/기동 파라미터는
+config.py의 "라이다 장애물 감지" / "장애물 회피" 섹션을 보세요.
 """
 
 import time
@@ -110,6 +113,7 @@ def draw_status(frame, lane_result, command, fps, obstacle_detected, lidar_debug
             f"SPD:{command['speed']} "
             f"OUT:{command.get('sent_speed', command['speed'])} "
             f"STR:{command['steering']} "
+            f"OFS:{lane_result.get('lane_offset_lanes', 0.0):.1f} "
             f"MODE:{command['reason']} FPS:{fps:.1f}"
         ),
         (8, 86),
@@ -181,14 +185,17 @@ def main():
 
             frame_lost_count = 0
             frame_count += 1
-            lane_result = lane_controller.update(frame)
 
-            lane_command = resolve_drive_command(lane_result)
+            # 라이다는 카메라와 무관하므로 먼저 확인하고, lane_controller.
+            # update(frame) 전에 차선 오프셋을 지시해야 이번 프레임의
+            # 카메라 제어 계산에 바로 반영됩니다.
             obstacle_detected = lidar_detector.is_obstacle_detected()
             lidar_debug = lidar_detector.get_debug_info()
-            command, reason = avoidance.update(
-                obstacle_detected, lane_command, lane_controller
-            )
+            avoidance.begin_frame(obstacle_detected, lane_controller)
+
+            lane_result = lane_controller.update(frame)
+            lane_command = resolve_drive_command(lane_result)
+            command, reason = avoidance.finalize_frame(lane_command)
             command["reason"] = reason
             command["sent_speed"] = hardware.drive(
                 command["speed"], command["steering"]
@@ -226,6 +233,7 @@ def main():
                     f"speed={command['speed']} "
                     f"output={command.get('sent_speed', command['speed'])} "
                     f"steer={command['steering']} "
+                    f"offset={lane_result.get('lane_offset_lanes', 0.0):.1f} "
                     f"lidar={'DETECT' if obstacle_detected else 'clear'} "
                     + (
                         f"lat={lidar_debug['lateral']:.0f} "

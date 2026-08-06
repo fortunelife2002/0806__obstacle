@@ -63,6 +63,28 @@ class LaneController:
         self.curve_target_offset_state = 0.0
         self.left_anchor_error_state = 0.0
         self.left_anchor_age = cfg.LEFT_ANCHOR_MEMORY_FRAMES + 1
+        # [2026-08-06 Claude 추가] 라이다 장애물 회피용 차선 오프셋(단위:
+        # 학습된 차선 폭의 배수). 0.0=평소처럼 지금 차선 중앙을 목표로
+        # 하고, 양수/음수면 obstacle_detector.AvoidanceController가
+        # set_lane_offset()으로 옆 차선 목표를 지시한 상태입니다.
+        # reset_tracking()에서는 안 지웁니다 — 프레임 유실 등으로 경로
+        # 기억이 지워져도 "지금 회피 중이다"라는 상태 자체는 유지되어야
+        # 하기 때문입니다.
+        self._lane_offset_lanes = 0.0
+
+    def set_lane_offset(self, lanes):
+        """장애물 회피 중 목표 차선을 바꿉니다.
+
+        lanes=0.0이면 지금 카메라가 인식하고 있는 차선(보통 2차선) 중앙을
+        그대로 목표로 삼습니다. lanes=+1.0이면 config.AVOID_LANE_DIRECTION
+        방향으로 차선 폭 한 개만큼 목표를 옮겨서(옆 차선, 1차선), 실제
+        조향은 이 목표를 향해 매 프레임 카메라 제어 루프(_calculate_control)
+        가 계속 보정합니다. 기존처럼 "정해진 각도로 정해진 시간만 꺾는"
+        오픈루프 방식과 달리, 라인 검출/피팅은 전혀 바꾸지 않고 최종
+        목표 위치만 옮기므로 실제로 그 차선에 안착할 때까지 카메라
+        피드백이 계속 작동합니다.
+        """
+        self._lane_offset_lanes = float(lanes)
 
     def reset_tracking(self):
         """카메라가 끊긴 뒤 오래된 경로와 조향 기억을 안전하게 지웁니다."""
@@ -1236,6 +1258,33 @@ class LaneController:
         near_target = scale_x(
             cfg.CONTROL_TARGET_X[0] + curve_margin, width
         )
+        if self._lane_offset_lanes != 0.0:
+            # 장애물 회피 중: 목표 위치를 학습된(또는 기본) 차선 폭만큼
+            # 옆으로 옮깁니다. 아래에서 계산하는 right_clearance/
+            # left_clearance/hard_boundary 등은 모두 이 near_target을
+            # 기준으로 다시 계산되므로, 실제 검출 로직은 하나도 안
+            # 바꿔도 회피 중에는 자동으로 "옆 차선 중앙"을 목표로
+            # 삼게 되고 경계 보호 로직도 그 새 목표 기준으로 계속
+            # 작동합니다(예: 아직 옆 차선에 못 들어갔으면 지금 추적
+            # 중인 선과의 거리가 비정상적으로 좁게 계산되어 guard/
+            # hard_boundary가 오히려 회피 방향으로 더 밀어줍니다).
+            offset_width_model = (
+                self.width_coefficients
+                if self.width_coefficients is not None
+                else self._default_width_model(width)
+            )
+            offset_lane_width = clamp(
+                float(np.polyval(
+                    offset_width_model, cfg.CONTROL_Y_RATIOS[0]
+                )) * width,
+                scale_x(cfg.TRACK_MIN_LANE_WIDTH, width),
+                min(scale_x(cfg.TRACK_MAX_LANE_WIDTH, width), width * 0.985),
+            )
+            near_target += (
+                cfg.AVOID_LANE_DIRECTION
+                * self._lane_offset_lanes
+                * offset_lane_width
+            )
         near_error = float(
             (path_x[0] - near_target) * cfg.REFERENCE_WIDTH / width
         )
@@ -1848,6 +1897,7 @@ class LaneController:
             "single_lane_side": self.single_lane_side,
             "single_lane_frames": self.single_lane_frames,
             "width_model_age": self.width_model_age,
+            "lane_offset_lanes": self._lane_offset_lanes,
             "confidence": confidence,
             "control_x": control_x,
             "control_errors": control_errors,
