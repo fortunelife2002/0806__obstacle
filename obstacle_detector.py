@@ -56,6 +56,10 @@ class LidarObstacleDetector:
         self._last_scan_time = 0.0
         self._running = False
         self._thread = None
+        # 실차에서 LIDAR_FRONT_ANGLE/LIDAR_LANE_WIDTH_MM이 맞는지 눈으로
+        # 확인할 수 있도록, 매 스캔에서 가장 가까운 점의 lateral/forward/
+        # in_lane 여부를 따로 기억해둡니다(get_debug_info 참고).
+        self._nearest_debug = None
 
         if cfg.LIDAR_ENABLED:
             self._start()
@@ -76,9 +80,8 @@ class LidarObstacleDetector:
         self._thread.start()
         print(f"LIDAR_STARTED: port={cfg.LIDAR_PORT}")
 
-    def _hit_in_lane_corridor(self, scan):
-        """차량 진행축 기준 좌우 내 차선 폭 이내·전방 감지거리 이내에
-        점이 하나라도 있으면 True를 반환합니다.
+    def _lane_geometry(self, scan):
+        """라이다 점을 차량 진행축 기준 직교좌표로 바꿉니다.
 
         각도(도) 기준 극좌표를, 라이다 정면(cfg.LIDAR_FRONT_ANGLE) 방향을
         0으로 하는 직교좌표로 바꿔서 lateral(횡방향)/forward(전방) 성분을
@@ -90,25 +93,56 @@ class LidarObstacleDetector:
         차선 중심선이 곧 라이다 원점을 지난다고 가정해 ±(차선 폭/2)로
         대칭 검사합니다. 라이다가 중앙에서 벗어나 있다면 lateral 계산에
         오프셋 보정을 추가해야 합니다.
+
+        Returns:
+            (distance, lateral, forward) numpy 배열 튜플, 또는 scan이
+            비어있으면 None.
         """
         data = np.asarray(scan, dtype=float)
         if data.size == 0:
-            return False
+            return None
 
         angle_diff_deg = (data[:, 0] - cfg.LIDAR_FRONT_ANGLE + 180.0) % 360.0 - 180.0
         angle_diff_rad = np.radians(angle_diff_deg)
         distance = data[:, 1]
         lateral = distance * np.sin(angle_diff_rad)
         forward = distance * np.cos(angle_diff_rad)
+        return distance, lateral, forward
+
+    def _hit_in_lane_corridor(self, scan):
+        """차량 진행축 기준 좌우 내 차선 폭 이내·전방 감지거리 이내에
+        점이 하나라도 있으면 (True, 디버그정보)를 반환합니다.
+
+        디버그정보는 감지거리 범위 안에서 가장 가까운 점의 lateral/
+        forward/in_lane 여부입니다(실차에서 LIDAR_FRONT_ANGLE/
+        LIDAR_LANE_WIDTH_MM이 맞는지 화면으로 확인하는 용도이며, hit
+        판정 자체에는 쓰이지 않습니다). 범위 안에 점이 하나도 없으면
+        None입니다.
+        """
+        geometry = self._lane_geometry(scan)
+        if geometry is None:
+            return False, None
+        distance, lateral, forward = geometry
 
         half_lane_width = cfg.LIDAR_LANE_WIDTH_MM * 0.5
-        mask = (
+        in_range = (
             (forward > 0.0)
-            & (np.abs(lateral) <= half_lane_width)
             & (distance >= cfg.LIDAR_DETECT_MIN_DISTANCE_MM)
             & (distance <= cfg.LIDAR_DETECT_MAX_DISTANCE_MM)
         )
-        return bool(np.any(mask))
+        in_lane = np.abs(lateral) <= half_lane_width
+        hit = bool(np.any(in_range & in_lane))
+
+        debug = None
+        if np.any(in_range):
+            nearest_idx = np.where(in_range)[0][np.argmin(distance[in_range])]
+            debug = {
+                "distance": float(distance[nearest_idx]),
+                "lateral": float(lateral[nearest_idx]),
+                "forward": float(forward[nearest_idx]),
+                "in_lane": bool(in_lane[nearest_idx]),
+            }
+        return hit, debug
 
     def _scan_loop(self):
         try:
@@ -118,7 +152,7 @@ class LidarObstacleDetector:
                 if len(scan) == 0:
                     continue
 
-                hit = self._hit_in_lane_corridor(scan)
+                hit, debug = self._hit_in_lane_corridor(scan)
                 with self._lock:
                     self._consecutive_hits = (
                         self._consecutive_hits + 1 if hit else 0
@@ -127,6 +161,7 @@ class LidarObstacleDetector:
                         self._consecutive_hits >= cfg.LIDAR_DETECT_CONFIRM_COUNT
                     )
                     self._last_scan_time = time.monotonic()
+                    self._nearest_debug = debug
         except Exception as exc:
             print(f"LIDAR_SCAN_LOOP_ENDED: {exc}")
 
@@ -144,6 +179,23 @@ class LidarObstacleDetector:
             if time.monotonic() - self._last_scan_time > cfg.LIDAR_STALE_SECONDS:
                 return False
             return self._detected
+
+    def get_debug_info(self):
+        """가장 최근 스캔에서 감지거리 범위 안 가장 가까운 점의
+        {"distance", "lateral", "forward", "in_lane"}을 반환합니다.
+
+        LIDAR_FRONT_ANGLE(정면 각도)과 LIDAR_LANE_WIDTH_MM(차선 폭)이
+        실차에서 맞게 설정됐는지 화면으로 확인하는 용도입니다: 예를 들어
+        차선 경계에 물체를 놓고 lateral 값이 ±(폭/2) 근처에서 in_lane이
+        뒤집히는지 보면 됩니다. 범위 안에 점이 없거나 라이다가 비활성/
+        통신 끊김이면 None을 반환합니다.
+        """
+        if not cfg.LIDAR_ENABLED or self._lidar is None:
+            return None
+        with self._lock:
+            if time.monotonic() - self._last_scan_time > cfg.LIDAR_STALE_SECONDS:
+                return None
+            return dict(self._nearest_debug) if self._nearest_debug else None
 
     def stop(self):
         self._running = False

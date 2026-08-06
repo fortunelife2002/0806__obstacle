@@ -58,7 +58,7 @@ def resolve_drive_command(lane_result):
     }
 
 
-def draw_status(frame, lane_result, command, fps, obstacle_detected):
+def draw_status(frame, lane_result, command, fps, obstacle_detected, lidar_debug):
     lidar_color = (0, 0, 255) if obstacle_detected else (0, 255, 0)
     cv2.putText(
         frame,
@@ -69,6 +69,25 @@ def draw_status(frame, lane_result, command, fps, obstacle_detected):
         lidar_color,
         2,
     )
+    if lidar_debug is not None:
+        # LIDAR_FRONT_ANGLE/LIDAR_LANE_WIDTH_MM 실차 검증용: 가장 가까운
+        # 점의 횡방향(LAT)/전방(FWD) 거리와 내 차선 안 여부(IN)입니다.
+        # 차선 경계에 물체를 놓고 LAT이 ±(차선폭/2) 근처에서 IN이
+        # 뒤집히는지 확인하세요.
+        in_lane_color = (0, 255, 0) if lidar_debug["in_lane"] else (0, 165, 255)
+        cv2.putText(
+            frame,
+            (
+                f"LAT:{lidar_debug['lateral']:.0f} "
+                f"FWD:{lidar_debug['forward']:.0f} "
+                f"IN:{'Y' if lidar_debug['in_lane'] else 'N'}"
+            ),
+            (160, 138),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            in_lane_color,
+            2,
+        )
     cv2.putText(
         frame,
         (
@@ -166,6 +185,7 @@ def main():
 
             lane_command = resolve_drive_command(lane_result)
             obstacle_detected = lidar_detector.is_obstacle_detected()
+            lidar_debug = lidar_detector.get_debug_info()
             command, reason = avoidance.update(
                 obstacle_detected, lane_command, lane_controller
             )
@@ -182,7 +202,7 @@ def main():
                 time.monotonic() - start_time,
                 0.001,
             )
-            draw_status(frame, lane_result, command, fps, obstacle_detected)
+            draw_status(frame, lane_result, command, fps, obstacle_detected, lidar_debug)
             cv2.imshow(cfg.WINDOW_NAME, frame)
             if cfg.SHOW_DEBUG:
                 cv2.imshow("Lane Mask", lane_result["mask"])
@@ -207,7 +227,14 @@ def main():
                     f"output={command.get('sent_speed', command['speed'])} "
                     f"steer={command['steering']} "
                     f"lidar={'DETECT' if obstacle_detected else 'clear'} "
-                    f"avoid_state={avoidance.state} "
+                    + (
+                        f"lat={lidar_debug['lateral']:.0f} "
+                        f"fwd={lidar_debug['forward']:.0f} "
+                        f"in_lane={lidar_debug['in_lane']} "
+                        if lidar_debug is not None
+                        else "lat=- fwd=- in_lane=- "
+                    )
+                    + f"avoid_state={avoidance.state} "
                     f"reason={command['reason']} "
                     f"fps={fps:.1f}"
                 )
