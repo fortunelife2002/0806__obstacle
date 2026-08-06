@@ -32,8 +32,12 @@
    으로 "목표 차선을 옆으로 옮겨라"라고만 지시합니다. 실제 조향은
    기존 카메라 차선 추종 PID가 매 프레임 계속 담당하므로, 옆 차선에
    정확히 안착할 때까지 카메라 피드백이 계속 작동합니다(각도/시간을
-   따로 맞출 필요가 없어짐). 상태는 IDLE -> AVOIDING(오프셋 적용) ->
-   COOLDOWN(오프셋 해제, 재감지 무시) -> IDLE로 단순해졌습니다.
+   따로 맞출 필요가 없어짐).
+
+   [2026-08-06 Claude 수정 5] 타이머(몇 초 동안 유지할지)도 없앴습니다.
+   상태는 IDLE <-> AVOIDING 두 가지뿐이고, 라이다가 감지 중인 동안만
+   오프셋을 켭니다 — "장애물이 있을 때만 차선을 변경한다"를 그대로
+   구현한 것입니다.
 """
 
 import threading
@@ -219,54 +223,53 @@ class LidarObstacleDetector:
 
 
 class AvoidanceController:
-    """라이다 감지 결과로 카메라 기반 차선 오프셋 회피를 관리하는 상태기계.
+    """라이다 감지 결과로 카메라 기반 차선 오프셋 회피를 관리합니다.
+
+    [2026-08-06 Claude 수정 5] 시간 기반 로직을 완전히 없앴습니다.
+    "장애물이 있을 때만 차선을 변경한다" — 매 프레임 라이다가 감지 중이면
+    오프셋을 켜고, 감지가 사라지면 그 즉시 오프셋을 끕니다. 타이머도,
+    쿨다운도 없습니다.
 
     조향은 직접 계산하지 않습니다 — LaneController.set_lane_offset()으로
     목표 차선만 지시하고, 실제 조향은 매 프레임 카메라 차선 추종 PID가
     계속 담당합니다. 그래서 이 클래스는 두 단계로 나눠 호출해야 합니다.
 
       1) begin_frame(): lane_controller.update(frame) 하기 "전"에 호출.
-         상태 전이를 결정하고 필요하면 오프셋을 설정합니다.
+         감지 여부에 따라 오프셋을 켜거나 끕니다.
       2) finalize_frame(): lane_controller.update(frame) 하고 난 "후"에
          호출. 최종 speed/steering과 디버그용 reason을 반환합니다.
+
+    주의(실차에서 꼭 확인하세요): 라이다 감지 코리더는 "차량 진행축
+    기준" 좌우 50mm라서, 차가 옆 차선으로 방향을 틀기 시작하는 순간
+    (아직 장애물을 완전히 지나치기 전이어도) 장애물이 이 좁은 정면
+    코리더 밖으로 금방 벗어나 obstacle_detected가 False가 될 수
+    있습니다. 그러면 아직 장애물 옆인데도 바로 원래 차선으로 복귀를
+    시작해 오히려 장애물과 부딪힐 위험이 있습니다. 이 문제가 실차에서
+    보이면, 감지가 사라져도 최소 시간/거리는 유지하는 하한선을 다시
+    추가하는 것을 고려하세요.
     """
 
     IDLE = "IDLE"
     AVOIDING = "AVOIDING"
-    COOLDOWN = "COOLDOWN"
 
     def __init__(self):
         self.state = self.IDLE
-        self._state_until = 0.0
 
     def begin_frame(self, obstacle_detected, lane_controller):
-        """카메라 처리 전에 매 프레임 호출합니다. 상태 전이만 담당합니다.
-
-        각 조건을 elif가 아닌 개별 if로 검사해서, 같은 프레임 안에서
-        COOLDOWN -> IDLE -> (장애물 있으면) AVOIDING까지 연달아 전이될 수
-        있게 합니다(쿨다운이 끝나는 바로 그 프레임에 장애물이 여전히
-        있으면 한 프레임도 안 쉬고 바로 재감지하기 위함).
-        """
-        now = time.monotonic()
-
-        if self.state == self.AVOIDING and now >= self._state_until:
-            self.state = self.COOLDOWN
-            self._state_until = now + cfg.AVOID_COOLDOWN_SECONDS
-            lane_controller.set_lane_offset(0.0)
-            print("AVOID_DONE: 2차선 목표로 복귀, 일반 차선 추종을 계속합니다.")
-
-        if self.state == self.COOLDOWN and now >= self._state_until:
-            self.state = self.IDLE
-
-        if self.state == self.IDLE and obstacle_detected:
+        """카메라 처리 전에 매 프레임 호출합니다. 감지 여부만 보고
+        오프셋을 켜고 끕니다(타이머 없음)."""
+        if obstacle_detected and self.state != self.AVOIDING:
             self.state = self.AVOIDING
-            self._state_until = now + cfg.AVOID_DURATION_SECONDS
             lane_controller.set_lane_offset(cfg.AVOID_LANE_OFFSET_LANES)
             print(
                 "AVOID_START: 내 차선(2차선) 전방 "
                 f"{cfg.LIDAR_DETECT_MAX_DISTANCE_MM:.0f}mm 이내 장애물 감지, "
                 "옆 차선을 목표로 옮깁니다(카메라가 계속 보정)."
             )
+        elif not obstacle_detected and self.state == self.AVOIDING:
+            self.state = self.IDLE
+            lane_controller.set_lane_offset(0.0)
+            print("AVOID_DONE: 장애물 미감지, 2차선 목표로 복귀합니다.")
 
     def finalize_frame(self, lane_command):
         """카메라 처리 후 매 프레임 호출합니다.
@@ -282,6 +285,4 @@ class AvoidanceController:
             command = dict(lane_command)
             command["speed"] = min(command["speed"], cfg.AVOID_SPEED)
             return command, "AVOIDING"
-        if self.state == self.COOLDOWN:
-            return lane_command, "LANE_COOLDOWN"
         return lane_command, "LANE"

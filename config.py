@@ -47,6 +47,15 @@ AVOID_RETURN_SECONDS는 삭제했고, AVOID_HOLD_SECONDS는 AVOID_DURATION_
 SECONDS로 이름을 바꿔 "오프셋을 얼마나 유지할지"라는 뜻으로만 씁니다.
 자세한 내용은 "장애물 회피" 섹션과 lane_controller.py의
 set_lane_offset/_calculate_control, obstacle_detector.py를 보세요.
+
+[2026-08-06 Claude 수정 5] "4초 로직을 버리고 장애물이 있을 때만
+차선을 변경하라"는 요구사항 반영. AVOID_DURATION_SECONDS/AVOID_
+COOLDOWN_SECONDS를 완전히 삭제했습니다. 이제 AvoidanceController는
+타이머 없이, 라이다가 감지 중인 매 프레임 오프셋을 켜고 감지가 사라지는
+즉시 끕니다(IDLE <-> AVOIDING 두 상태만 존재). 감지 코리더가 차량
+진행축 기준이라 회피 도중 감지가 일찍 꺼질 수 있다는 주의사항은 "장애물
+회피" 섹션과 obstacle_detector.AvoidanceController의 docstring에
+적어뒀습니다.
 """
 
 # 하드웨어 연결 설정
@@ -473,9 +482,20 @@ LIDAR_STALE_SECONDS = 0.5
 # (오픈루프로 카메라를 무시하는 구간이 없어져서, 차선 인식이 한 번도
 # 끊기지 않습니다).
 #
-# 상태는 IDLE -> AVOIDING(오프셋 적용, AVOID_DURATION_SECONDS 동안
-# 유지) -> COOLDOWN(오프셋 해제, 재감지 무시) -> IDLE 세 가지로
-# 단순해졌습니다.
+# [2026-08-06 Claude 수정 5] 시간 기반 로직(AVOID_DURATION_SECONDS,
+# AVOID_COOLDOWN_SECONDS)을 완전히 없앴습니다. 이제 상태는 IDLE <->
+# AVOIDING 두 가지뿐이고, 라이다가 감지 중인 매 프레임 오프셋을 켜고
+# (AVOIDING), 감지가 사라지는 즉시 그 프레임에 오프셋을 끕니다(IDLE).
+# "장애물이 있을 때만 차선을 변경한다"는 요구사항을 그대로 반영한
+# 것입니다.
+#
+# 주의: 라이다 감지 코리더가 "차량 진행축 기준" 좌우 50mm라서, 차가
+# 옆 차선으로 방향을 틀기 시작하는 순간 장애물이 이 좁은 정면 코리더
+# 밖으로 금방 벗어나 감지가 꺼질 수 있습니다(아직 완전히 지나치기
+# 전이어도). 그러면 너무 일찍 원래 차선으로 복귀를 시작해 오히려
+# 부딪힐 위험이 있습니다 — obstacle_detector.AvoidanceController
+# docstring 참고. 실차에서 이 문제가 보이면 최소 유지 시간/거리
+# 하한선을 다시 추가하는 것을 고려하세요.
 AVOID_LANE_OFFSET_LANES = 1.0
 
 # +1: STEER_LEFT 방향(왼쪽 차선, 1차선)으로 회피, -1: STEER_RIGHT
@@ -485,16 +505,5 @@ AVOID_LANE_OFFSET_LANES = 1.0
 # 필요 없습니다.
 AVOID_LANE_DIRECTION = 1
 
-# [2026-08-06 Claude 수정 3] AVOID_DURATION_SECONDS: "옆 차선으로 옮겨간
-# 채로 얼마나 유지할지"입니다. 예전 AVOID_HOLD_SECONDS와 같은 역할이지만,
-# 이제 차로 변경 자체는 카메라가 알아서 부드럽게 하므로 이 값은 순수하게
-# "장애물(들)을 다 지나갈 때까지 걸리는 시간"만 의미합니다. 차량 110cm+
-# 장애물 110cm 기준으로 추정했던 3~4초에서 시작해 실차에서 재조정
-# 하세요. 1차선에도 장애물이 있어서 이 값만으로는 부족할 수 있습니다 —
-# 그 장애물의 위치를 알면 라이다로 재확인하는 로직을 추가할 수 있습니다.
-AVOID_DURATION_SECONDS = 4.0
+# 회피 중에는 안전하게 이 속도로 제한합니다.
 AVOID_SPEED = 100
-
-# 회피 기동이 끝난 뒤, 같은 장애물에 다시 반응해 좌우로 흔들리지 않도록
-# 이 시간(초) 동안은 재감지가 있어도 무시하고 일반 차선 추종을 유지합니다.
-AVOID_COOLDOWN_SECONDS = 3.0
