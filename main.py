@@ -5,6 +5,11 @@
 완전히 안정시킨 뒤 신호등 → 정지선 순으로 하나씩 실차 검증하며 추가할
 예정입니다. resolve_drive_command는 지금은 차선 결과를 그대로 통과시키지만,
 나중에 기능을 얹을 자리로 그대로 남겨뒀습니다.
+
+라이다 장애물 회피(obstacle_detector.py)는 차선 추종과 별개 레이어로
+추가했습니다: 매 프레임 lane_command를 먼저 계산한 뒤, AvoidanceController가
+필요할 때만 그 값을 덮어씁니다. 자세한 임계값/기동 파라미터는 config.py의
+"라이다 장애물 감지" / "장애물 회피" 섹션을 보세요.
 """
 
 import time
@@ -14,6 +19,7 @@ import cv2
 import config as cfg
 from hardware_controller import HardwareController
 from lane_controller import LaneController
+from obstacle_detector import AvoidanceController, LidarObstacleDetector
 
 
 def wait_for_start(hardware):
@@ -52,7 +58,17 @@ def resolve_drive_command(lane_result):
     }
 
 
-def draw_status(frame, lane_result, command, fps):
+def draw_status(frame, lane_result, command, fps, obstacle_detected):
+    lidar_color = (0, 0, 255) if obstacle_detected else (0, 255, 0)
+    cv2.putText(
+        frame,
+        f"LIDAR:{'DETECT' if obstacle_detected else 'CLEAR'}",
+        (8, 138),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        lidar_color,
+        2,
+    )
     cv2.putText(
         frame,
         (
@@ -106,15 +122,21 @@ def draw_status(frame, lane_result, command, fps):
 def main():
     hardware = HardwareController()
     lane_controller = LaneController()
+    lidar_detector = LidarObstacleDetector()
+    avoidance = AvoidanceController()
 
     if not wait_for_start(hardware):
         hardware.stop()
         hardware.close()
+        lidar_detector.stop()
         return
 
     frame_count = 0
     frame_lost_count = 0
     start_time = time.monotonic()
+    # 회피 기동 중 카메라 프레임이 잠깐 끊겨도 조향이 차선 추종값으로
+    # 되돌아가지 않도록, 실제로 마지막에 내보낸 명령을 따로 기억합니다.
+    last_command = {"speed": 0, "steering": cfg.STEER_CENTER}
 
     try:
         while True:
@@ -133,8 +155,8 @@ def main():
                     hardware.stop()
                 else:
                     hardware.drive(
-                        lane_controller.previous_speed,
-                        lane_controller.previous_steer,
+                        last_command["speed"],
+                        last_command["steering"],
                     )
                 continue
 
@@ -142,16 +164,25 @@ def main():
             frame_count += 1
             lane_result = lane_controller.update(frame)
 
-            command = resolve_drive_command(lane_result)
+            lane_command = resolve_drive_command(lane_result)
+            obstacle_detected = lidar_detector.is_obstacle_detected()
+            command, reason = avoidance.update(
+                obstacle_detected, lane_command, lane_controller
+            )
+            command["reason"] = reason
             command["sent_speed"] = hardware.drive(
                 command["speed"], command["steering"]
             )
+            last_command = {
+                "speed": command["speed"],
+                "steering": command["steering"],
+            }
 
             fps = frame_count / max(
                 time.monotonic() - start_time,
                 0.001,
             )
-            draw_status(frame, lane_result, command, fps)
+            draw_status(frame, lane_result, command, fps, obstacle_detected)
             cv2.imshow(cfg.WINDOW_NAME, frame)
             if cfg.SHOW_DEBUG:
                 cv2.imshow("Lane Mask", lane_result["mask"])
@@ -175,6 +206,9 @@ def main():
                     f"speed={command['speed']} "
                     f"output={command.get('sent_speed', command['speed'])} "
                     f"steer={command['steering']} "
+                    f"lidar={'DETECT' if obstacle_detected else 'clear'} "
+                    f"avoid_state={avoidance.state} "
+                    f"reason={command['reason']} "
                     f"fps={fps:.1f}"
                 )
 
@@ -186,6 +220,7 @@ def main():
     finally:
         hardware.stop()
         hardware.close()
+        lidar_detector.stop()
 
 
 if __name__ == "__main__":

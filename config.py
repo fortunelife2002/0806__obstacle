@@ -9,6 +9,13 @@ BOX_FILTER_* 상수군을 새로 추가했습니다(아래 "박스형 표시 오
 블록). lane_controller.py의 _remove_box_structures / _confirm_horizontal_bars
 / _group_bars_into_ladders 와 짝입니다. RIGHT_GUARD_GAIN 등 기존 값은
 건드리지 않았습니다.
+
+[2026-08-06 Claude 수정] config_by_claude.py에 따로 있던 라이다 장애물
+회피 설정(LIDAR_*, AVOID_*)을 이 파일 맨 끝으로 병합했습니다. 파일이
+갈라져 있으면 어느 쪽을 고쳐도 실행 중인 main.py에는 반영이 안 되는
+문제가 있어서 config.py 하나로 합쳤습니다. 병합하며 기존 ARDUINO_PORT/
+CAMERA_PORT(COM9/1) 등 이 파일의 값은 그대로 두었으니, 다른 PC에서
+테스트했다면(COM12/2였음) 실제 장치에 맞게 다시 확인하세요.
 """
 
 # 하드웨어 연결 설정
@@ -353,3 +360,52 @@ CURVATURE_SPEED_GAIN = 0.16
 WINDOW_NAME = "Autonomous Car"
 SHOW_DEBUG = True
 PRINT_INTERVAL = 10
+
+# -------------------------------------------------------------------
+# 라이다 장애물 감지 (obstacle_detector.py)
+# -------------------------------------------------------------------
+# 아두이노/카메라와 별개로 라이다만 연결하는 시리얼 포트입니다.
+# 장치관리자(윈도우) 또는 `python -m serial.tools.list_ports`로 확인하세요.
+LIDAR_ENABLED = True
+LIDAR_PORT = "COM5"
+
+# 라이다 스캔 각도 중 "차량 정면"에 해당하는 값(도)입니다. 라이다 장착
+# 방향에 따라 다르므로 반드시 calibrate_lidar_angle.py로 실차에서 먼저
+# 확인한 뒤 이 값을 바꿔주세요. 기본값 0은 임시값입니다.
+LIDAR_FRONT_ANGLE = 0.0
+
+# 정면 각도 기준 ±LIDAR_DETECT_HALF_WINDOW_DEG 범위만 봅니다.
+# (예: 5.0이면 정면 기준 좌우 5도씩, 총 10도 폭)
+LIDAR_DETECT_HALF_WINDOW_DEG = 5.0
+
+# 1m 30cm 이내만 "장애물"로 판단합니다. 라이다 값은 mm 단위입니다.
+LIDAR_DETECT_MIN_DISTANCE_MM = 50.0
+LIDAR_DETECT_MAX_DISTANCE_MM = 1300.0
+
+# 노이즈로 인한 오검출을 막기 위해, 연속 스캔에서 이 횟수 이상 감지되어야
+# "장애물 있음"으로 확정합니다.
+LIDAR_DETECT_CONFIRM_COUNT = 2
+
+# 라이다 스캔 스레드가 이 시간(초) 동안 새 데이터를 못 주면 통신이 끊긴
+# 것으로 보고 안전하게 "장애물 없음"으로 취급합니다(정지가 아니라 무시).
+LIDAR_STALE_SECONDS = 0.5
+
+# -------------------------------------------------------------------
+# 장애물 회피(옆 차선 이동) 기동 (obstacle_detector.py: AvoidanceController)
+# -------------------------------------------------------------------
+# 장애물 감지 즉시, 차선 인식 결과를 무시하고 이 조향값/속도로 정해진
+# 시간 동안 옆 차선으로 이동합니다(카메라 피드백 없는 오픈루프 기동이라
+# 실차에서 AVOID_STEER_OFFSET / AVOID_DURATION_SECONDS를 반드시 튜닝해야
+# 실제로 옆 차선 폭만큼만 이동합니다).
+AVOID_STEER_OFFSET = 35
+
+# +1: STEER_LEFT 방향(왼쪽 차선)으로 회피, -1: STEER_RIGHT 방향(오른쪽
+# 차선)으로 회피. 트랙에서 옆 차선이 어느 쪽인지에 맞게 바꾸세요.
+AVOID_LANE_DIRECTION = 1
+
+AVOID_DURATION_SECONDS = 1.4
+AVOID_SPEED = 100
+
+# 회피 기동이 끝난 뒤, 같은 장애물에 다시 반응해 좌우로 흔들리지 않도록
+# 이 시간(초) 동안은 재감지가 있어도 무시하고 일반 차선 추종을 유지합니다.
+AVOID_COOLDOWN_SECONDS = 3.0
