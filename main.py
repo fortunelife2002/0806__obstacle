@@ -196,9 +196,7 @@ def main():
 
             lane_result = lane_controller.update(frame)
             lane_command = resolve_drive_command(lane_result)
-            command, reason = avoidance.finalize_frame(
-                lane_command, lane_result, lane_controller
-            )
+            command, reason = avoidance.finalize_frame(lane_command)
             command["reason"] = reason
             command["sent_speed"] = hardware.drive(
                 command["speed"], command["steering"]

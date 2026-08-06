@@ -50,12 +50,16 @@ set_lane_offset/_calculate_control, obstacle_detector.py를 보세요.
 
 [2026-08-06 Claude 수정 5] "4초 로직을 버리고 장애물이 있을 때만
 차선을 변경하라"는 요구사항 반영. AVOID_DURATION_SECONDS/AVOID_
-COOLDOWN_SECONDS를 완전히 삭제했습니다. 이제 AvoidanceController는
-타이머 없이, 라이다가 감지 중인 매 프레임 오프셋을 켜고 감지가 사라지는
-즉시 끕니다(IDLE <-> AVOIDING 두 상태만 존재). 감지 코리더가 차량
-진행축 기준이라 회피 도중 감지가 일찍 꺼질 수 있다는 주의사항은 "장애물
-회피" 섹션과 obstacle_detector.AvoidanceController의 docstring에
-적어뒀습니다.
+COOLDOWN_SECONDS를 완전히 삭제했습니다.
+
+[2026-08-06 Claude 수정 6->7 (최종)] 처음엔 "장애물 미감지시 자동 복귀"
+(수정 5), 그 다음엔 "점선을 넘은 게 카메라로 확인되면 자동 복귀"(수정 6)
+로 시도했지만, 둘 다 "자동 복귀" 자체가 요구사항이 아니라는 걸 알게
+됐습니다. 최종적으로 자동 복귀 개념을 완전히 없애고, 장애물을 새로
+감지할 때마다 지금 있는 차선의 옆 차선으로 토글하는 방식으로
+정리했습니다(obstacle_detector.AvoidanceController 참고). 2차선에서
+감지되면 1차선으로, 그 뒤 1차선에서 또 감지되면 다시 2차선으로 —
+감지 이벤트가 없으면 마지막 설정을 계속 유지합니다.
 """
 
 # 하드웨어 연결 설정
@@ -452,9 +456,9 @@ LIDAR_LANE_WIDTH_MM = 340.0
 LIDAR_OBSTACLE_LATERAL_MIN_MM = 0.0
 LIDAR_OBSTACLE_LATERAL_MAX_MM = 50.0
 
-# 1m 30cm 이내만 "장애물"로 판단합니다. 라이다 값은 mm 단위입니다.
+# 1m 50cm 이내만 "장애물"로 판단합니다. 라이다 값은 mm 단위입니다.
 LIDAR_DETECT_MIN_DISTANCE_MM = 50.0
-LIDAR_DETECT_MAX_DISTANCE_MM = 1300.0
+LIDAR_DETECT_MAX_DISTANCE_MM = 1500.0
 
 # 노이즈로 인한 오검출을 막기 위해, 연속 스캔에서 이 횟수 이상 감지되어야
 # "장애물 있음"으로 확정합니다.
