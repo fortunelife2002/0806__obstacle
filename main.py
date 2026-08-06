@@ -72,8 +72,8 @@ def draw_status(frame, lane_result, command, fps, obstacle_detected, lidar_debug
     if lidar_debug is not None:
         # LIDAR_FRONT_ANGLE/LIDAR_OBSTACLE_LATERAL_*_MM 실차 검증용: 가장
         # 가까운 점의 횡방향(LAT)/전방(FWD) 거리와 장애물 예상 구간
-        # 안(IN)/밖(OUT, 중앙이든 가장자리든)입니다. LAT 절대값이
-        # 150mm/230mm 경계를 지날 때 IN이 뒤집히는지 확인하세요.
+        # 안(IN)/밖(OUT)입니다. LAT 절대값이 50mm 경계를 지날 때 IN이
+        # 뒤집히는지 확인하세요.
         in_lane_color = (0, 255, 0) if lidar_debug["in_lane"] else (0, 165, 255)
         cv2.putText(
             frame,
