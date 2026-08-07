@@ -215,7 +215,7 @@ TRACK_PAIR_CENTER_BLEND = 0.45
 # True면 좌우 경계/차선 폭 추정 대신 점선만 직접 추적합니다. 회색 바닥을
 # 왼쪽 차선으로 오인하는 문제를 피하고, 차선 변경 시 점선이 화면 왼쪽↔
 # 오른쪽으로 이동하는 것을 정상 주행으로 취급합니다.
-CENTER_LINE_MODE = True
+CENTER_LINE_MODE = False
 # 2차선(기본)에서 점선이 보이길 원하는 화면 X(640기준). 회피 오프셋은
 # 여기에 차선 폭을 더해 1차선(점선이 오른쪽) 목표를 만듭니다.
 CENTER_LINE_TARGET_X = 220.0
@@ -233,6 +233,20 @@ CENTER_LINE_MAX_MIDDLE_JUMP = 240.0
 CENTER_LINE_MAX_PREVIEW_JUMP = 280.0
 CENTER_LINE_MAX_FAR_JUMP = 320.0
 CENTER_LINE_MAX_FIT_RMSE = 28.0
+
+# 왼쪽 경계(점선) 후보로 쓸 세그먼트 최대 폭(px, 640기준). 이보다 넓은
+# 흰 덩어리는 회색 바닥/반사로 보고 제외합니다(점선 조각은 얇음).
+LEFT_BOUNDARY_MAX_SEGMENT_WIDTH = 30.0
+# 회피 중(차선 오프셋 활성)에는 왼쪽 경계를 쓰지 않고 오른쪽 실선+학습
+# 폭만으로 중앙을 복원합니다. 왼쪽으로 이동할 때 바닥이 차선으로
+# 잡혀 BOTH 판정이 깨지는 문제를 막습니다.
+AVOID_RIGHT_ONLY_TRACKING = True
+
+# 회피 중에는 오른쪽 실선+학습 폭만 씁니다(왼쪽 바닥 오인식 방지).
+AVOID_RIGHT_ONLY_JUMP_NEAR = 120.0
+AVOID_RIGHT_ONLY_JUMP_MIDDLE = 150.0
+AVOID_RIGHT_ONLY_JUMP_PREVIEW = 180.0
+AVOID_RIGHT_ONLY_JUMP_FAR = 220.0
 
 # 한쪽 차선만 보일 때의 안전 추적 설정입니다. 양쪽 차선으로 폭을 먼저
 # 학습한 뒤에만 사용하며, 보이는 경계와 저장된 폭으로 중앙을 복원합니다.

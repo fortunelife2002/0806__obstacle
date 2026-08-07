@@ -77,15 +77,18 @@ class LaneController:
         """장애물 회피 중 목표 차선을 바꿉니다.
 
         lanes=0.0이면 지금 카메라가 인식하고 있는 차선(보통 2차선) 중앙을
-        그대로 목표로 삼습니다. lanes=+1.0이면 config.AVOID_LANE_DIRECTION
-        방향으로 차선 폭 한 개만큼 목표를 옮겨서(옆 차선, 1차선), 실제
-        조향은 이 목표를 향해 매 프레임 카메라 제어 루프(_calculate_control)
-        가 계속 보정합니다. 기존처럼 "정해진 각도로 정해진 시간만 꺾는"
-        오픈루프 방식과 달리, 라인 검출/피팅은 전혀 바꾸지 않고 최종
-        목표 위치만 옮기므로 실제로 그 차선에 안착할 때까지 카메라
-        피드백이 계속 작동합니다.
+        그대로 목표로 삼습니다. lanes=+1.0이면 옆 차선(1차선)으로 목표를
+        옮깁니다. 회피 중에는 AVOID_RIGHT_ONLY_TRACKING으로 왼쪽 바닥
+        오인식을 막기 위해 오른쪽 실선+학습 폭만 사용합니다.
         """
         self._lane_offset_lanes = float(lanes)
+
+    def _avoid_right_only_active(self):
+        """회피 중 왼쪽 바닥 오인식을 막기 위해 오른쪽 실선만 쓸 때 True."""
+        return (
+            cfg.AVOID_RIGHT_ONLY_TRACKING
+            and self._lane_offset_lanes != 0.0
+        )
 
     def reset_tracking(self):
         """카메라가 끊긴 뒤 오래된 경로와 조향 기억을 안전하게 지웁니다."""
@@ -658,6 +661,13 @@ class LaneController:
         return coefficients, measurements, confidence
 
     def _path_jump_limits(self):
+        if self._avoid_right_only_active():
+            return (
+                cfg.AVOID_RIGHT_ONLY_JUMP_NEAR,
+                cfg.AVOID_RIGHT_ONLY_JUMP_MIDDLE,
+                cfg.AVOID_RIGHT_ONLY_JUMP_PREVIEW,
+                cfg.AVOID_RIGHT_ONLY_JUMP_FAR,
+            )
         if cfg.CENTER_LINE_MODE:
             return (
                 cfg.CENTER_LINE_MAX_NEAR_JUMP,
@@ -818,11 +828,16 @@ class LaneController:
             scale_x(cfg.TRACK_MAX_LANE_WIDTH, width),
             width * 0.985,
         )
+        max_left_segment_width = scale_x(
+            cfg.LEFT_BOUNDARY_MAX_SEGMENT_WIDTH, width
+        )
         rows = []
 
         for item in right_track:
             candidates = []
             for segment in item["segments"]:
+                if segment["width"] > max_left_segment_width:
+                    continue
                 lane_width = item["right"] - segment["x"]
                 if not minimum_width <= lane_width <= maximum_width:
                     continue
@@ -965,13 +980,24 @@ class LaneController:
             cfg.TRACK_ROW_COUNT,
         )
         right_track = self._track_right_boundary(mask, rows)
-        width_model, width_reliable = self._fit_width_model(
-            right_track, height, width
-        )
+        if self._avoid_right_only_active():
+            width_model = (
+                self.width_coefficients
+                if self.width_coefficients is not None
+                else self._default_width_model(width)
+            )
+            width_reliable = self.width_coefficients is not None
+        else:
+            width_model, width_reliable = self._fit_width_model(
+                right_track, height, width
+            )
         minimum_width = scale_x(cfg.TRACK_MIN_LANE_WIDTH, width)
         maximum_width = min(
             scale_x(cfg.TRACK_MAX_LANE_WIDTH, width),
             width * 0.985,
+        )
+        max_left_segment_width = scale_x(
+            cfg.LEFT_BOUNDARY_MAX_SEGMENT_WIDTH, width
         )
         measurements = []
 
@@ -983,10 +1009,13 @@ class LaneController:
                 maximum_width,
             )
             left_candidates = []
-            for segment in item["segments"]:
-                measured_width = item["right"] - segment["x"]
-                if minimum_width <= measured_width <= maximum_width:
-                    left_candidates.append((segment, measured_width))
+            if not self._avoid_right_only_active():
+                for segment in item["segments"]:
+                    if segment["width"] > max_left_segment_width:
+                        continue
+                    measured_width = item["right"] - segment["x"]
+                    if minimum_width <= measured_width <= maximum_width:
+                        left_candidates.append((segment, measured_width))
 
             selected_left = None
             if left_candidates:
@@ -1857,6 +1886,7 @@ class LaneController:
             if (
                 coefficients is not None
                 and paired_points < cfg.TRACK_WIDTH_MIN_PAIR_ROWS
+                and not self._avoid_right_only_active()
                 and not (
                     self.width_coefficients is not None
                     and self.width_model_age == 0
@@ -1865,17 +1895,36 @@ class LaneController:
                 coefficients = None
 
             if coefficients is None:
-                (
-                    single_coefficients,
-                    single_inliers,
-                    single_confidence,
-                    single_side,
-                ) = self._try_single_lane(mask, height, width)
-                if single_coefficients is not None:
-                    coefficients = single_coefficients
-                    measurements = single_inliers
-                    inliers = single_inliers
-                    confidence = single_confidence
+                if self._avoid_right_only_active():
+                    (
+                        single_coefficients,
+                        single_inliers,
+                        single_confidence,
+                    ) = self._fit_single_lane_path(
+                        self._collect_single_lane_measurements(
+                            mask, "RIGHT"
+                        ),
+                        height,
+                        width,
+                    )
+                    if single_coefficients is not None:
+                        coefficients = single_coefficients
+                        measurements = single_inliers
+                        inliers = single_inliers
+                        confidence = single_confidence
+                        single_side = "RIGHT"
+                else:
+                    (
+                        single_coefficients,
+                        single_inliers,
+                        single_confidence,
+                        single_side,
+                    ) = self._try_single_lane(mask, height, width)
+                    if single_coefficients is not None:
+                        coefficients = single_coefficients
+                        measurements = single_inliers
+                        inliers = single_inliers
+                        confidence = single_confidence
 
         detected = self._accept_and_filter_path(
             coefficients, height, width
@@ -1977,7 +2026,7 @@ class LaneController:
                 - self.filtered_derivative * cfg.STEER_KD
                 - corridor_steer
             )
-            if status == "MEMORY":
+            if status in ("MEMORY", "CENTER_MEMORY"):
                 neutral_target = (
                     cfg.STEER_CENTER
                     + (self.previous_steer - cfg.STEER_CENTER)
@@ -2046,7 +2095,7 @@ class LaneController:
             )))
             if curvature >= cfg.CURVE_SPEED_TRIGGER:
                 target_speed = min(target_speed, cfg.CURVE_MAX_SPEED)
-            if status == "MEMORY":
+            if status in ("MEMORY", "CENTER_MEMORY"):
                 target_speed = min(target_speed, cfg.RETURN_SPEED)
             elif status in ("SINGLE_LEFT", "SINGLE_RIGHT", "CENTER_TRACKING", "CENTER_CONFIRMING"):
                 if status in ("SINGLE_LEFT", "SINGLE_RIGHT"):
