@@ -593,116 +593,24 @@ class LaneController:
             cfg.TRACK_ROW_COUNT,
         )
 
-    def _segment_column_stats(self, mask, rows, width):
-        """얇은 세그먼트의 X 버킷별 행 출현 통계를 만듭니다."""
-        max_segment_width = scale_x(cfg.CENTER_LINE_MAX_SEGMENT_WIDTH, width)
-        bucket_counts = {}
-        bucket_strength = {}
-        for y in rows:
-            for segment in self._row_segments(mask, y):
-                if segment["width"] > max_segment_width:
-                    continue
-                bucket = int(round(segment["x"] / 8.0)) * 8
-                bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
-                bucket_strength[bucket] = (
-                    bucket_strength.get(bucket, 0.0) + segment["strength"]
-                )
-        return bucket_counts, bucket_strength
-
-    def _estimate_dashed_column(self, mask, rows, width):
-        """행 간 출현 비율로 점선(간헐)과 실선(연속)을 구분합니다."""
-        bucket_counts, bucket_strength = self._segment_column_stats(
-            mask, rows, width
-        )
-
-        if not bucket_counts:
-            return None
-
-        total_rows = max(1, len(rows))
-        best_x = None
-        best_score = -1.0
-        for bucket, count in bucket_counts.items():
-            ratio = count / total_rows
-            if ratio < cfg.TRACK_DASHED_MIN_ROW_RATIO:
-                continue
-            if ratio > cfg.TRACK_DASHED_MAX_ROW_RATIO:
-                continue
-            x_center = float(bucket)
-            if (
-                self._lane_offset_lanes != 0.0
-                and x_center < width * cfg.TRACK_DASHED_RIGHT_MIN_RATIO
-            ):
-                continue
-            score = (
-                1.0 - abs(ratio - cfg.TRACK_DASHED_TARGET_ROW_RATIO)
-                + min(bucket_strength[bucket], 2000.0) * 0.0001
-            )
-            if score > best_score:
-                best_score = score
-                best_x = x_center
-        return best_x
-
-    def _identify_solid_columns(self, mask, rows, width):
-        """연속으로 보이는 실선 X 버킷 목록을 반환합니다."""
-        bucket_counts, _ = self._segment_column_stats(mask, rows, width)
-        if not bucket_counts:
-            return []
-        total_rows = max(1, len(rows))
-        return [
-            float(bucket)
-            for bucket, count in bucket_counts.items()
-            if count / total_rows > cfg.TRACK_DASHED_MAX_ROW_RATIO
-        ]
-
-    def _exclude_solid_segments(self, segments, solid_columns, width):
-        """실선으로 분류된 열에 속한 세그먼트를 제외합니다."""
-        if not solid_columns:
-            return segments
-        tolerance = scale_x(cfg.TRACK_DASHED_SOLID_LEFT_MARGIN, width)
-        return [
-            item for item in segments
-            if not any(
-                abs(item["x"] - column) <= tolerance
-                for column in solid_columns
-            )
-        ]
-
-    def _track_dashed_positions(self, mask, rows):
-        """행별 점선(중앙선) X 위치를 아래→위로 추적합니다.
-
-        Returns:
-            dict[float, float]: y 좌표 -> 점선 X
-        """
-        height, width = mask.shape
+    def _collect_center_line_measurements(self, mask, height, width):
+        """1·2차선 사이 점선(중앙선) 세그먼트만 행 단위로 추적합니다."""
+        rows = self._center_line_rows(height)
         default_x = scale_x(cfg.CENTER_LINE_TARGET_X, width)
         max_segment_width = scale_x(cfg.CENTER_LINE_MAX_SEGMENT_WIDTH, width)
-        if self._lane_offset_lanes != 0.0:
-            search_min_ratio = cfg.TRACK_DASHED_RIGHT_MIN_RATIO
-            search_max_ratio = cfg.CENTER_LINE_SEARCH_MAX_RATIO
-        else:
-            search_min_ratio = cfg.CENTER_LINE_SEARCH_MIN_RATIO
-            search_max_ratio = cfg.CENTER_LINE_SEARCH_MAX_RATIO
-        estimated_column = self._estimate_dashed_column(mask, rows, width)
-        solid_columns = self._identify_solid_columns(mask, rows, width)
         tracked = []
         missing_rows = 0
 
         for y in sorted(rows, reverse=True):
-            segments = self._exclude_solid_segments(
-                [
-                    item for item in self._row_segments(mask, y)
-                    if item["width"] <= max_segment_width
-                ],
-                solid_columns,
-                width,
-            )
+            segments = [
+                item for item in self._row_segments(mask, y)
+                if item["width"] <= max_segment_width
+            ]
             if not segments:
                 missing_rows += 1
                 continue
 
             predicted = self._previous_center(y, height, default_x)
-            if estimated_column is not None and not tracked:
-                predicted = estimated_column
             if tracked:
                 previous = tracked[-1]
                 predicted = previous["x"]
@@ -718,30 +626,17 @@ class LaneController:
                 + min(missing_rows, 3) * cfg.CENTER_LINE_GAP_GROWTH,
                 width,
             )
-            if estimated_column is not None:
-                margin = min(
-                    margin,
-                    scale_x(cfg.CENTER_LINE_SEARCH_MARGIN, width) * 1.15,
-                )
             usable = [
                 item for item in segments
                 if abs(item["x"] - predicted) <= margin
             ]
             if not usable and not tracked:
-                x_min = width * search_min_ratio
-                x_max = width * search_max_ratio
-                zone = [
+                x_min = width * cfg.CENTER_LINE_SEARCH_MIN_RATIO
+                x_max = width * cfg.CENTER_LINE_SEARCH_MAX_RATIO
+                usable = [
                     item for item in segments
                     if x_min <= item["x"] <= x_max
                 ]
-                if estimated_column is not None:
-                    usable = [
-                        item for item in zone
-                        if abs(item["x"] - estimated_column)
-                        <= scale_x(cfg.CENTER_LINE_SEARCH_MARGIN, width)
-                    ]
-                else:
-                    usable = zone
             if not usable:
                 missing_rows += 1
                 continue
@@ -759,64 +654,20 @@ class LaneController:
             })
             missing_rows = 0
 
-        return {item["y"]: item["x"] for item in tracked}
-
-    def _dashed_on_right(self, dashed_x, width):
-        """점선이 화면 오른쪽에 있는지 판정합니다."""
-        if dashed_x is None:
-            return False
-        return dashed_x >= width * cfg.TRACK_DASHED_RIGHT_MIN_RATIO
-
-    def _dashed_tracking_context(self, dashed_map, rows, width):
-        """점선 추적 결과에서 전역 모드와 행별 보간 위치를 만듭니다."""
-        if not dashed_map:
-            return False, {}
-
-        dashed_values = list(dashed_map.values())
-        reference_x = float(np.percentile(dashed_values, 75))
-        dashed_mode_right = (
-            len(dashed_values) >= 2
-            and reference_x >= width * cfg.TRACK_DASHED_RIGHT_MIN_RATIO
-        )
-        if not dashed_mode_right:
-            return False, {
-                float(y): dashed_map[float(y)]
-                for y in rows
-                if float(y) in dashed_map
-            }
-
-        height = max(dashed_map.keys()) - min(dashed_map.keys())
-        max_gap = max(height * 0.18, 1.0)
-        interpolated = {}
-        known = sorted(dashed_map.items(), key=lambda item: item[0])
-        for y in rows:
-            yf = float(y)
-            if yf in dashed_map:
-                interpolated[yf] = dashed_map[yf]
-                continue
-            nearest = min(known, key=lambda item: abs(item[0] - yf))
-            if abs(nearest[0] - yf) <= max_gap:
-                interpolated[yf] = nearest[1]
-        return True, interpolated
-
-    def _collect_center_line_measurements(self, mask, height, width):
-        """1·2차선 사이 점선(중앙선) 세그먼트만 행 단위로 추적합니다."""
-        rows = self._center_line_rows(height)
-        dashed_map = self._track_dashed_positions(mask, rows)
         lane_width = scale_x(cfg.LANE_BANDS[0]["width"], width)
         return [
             {
-                "center": dashed_x,
+                "center": item["x"],
                 "left": None,
                 "right": None,
                 "lane_width": lane_width,
                 "source": "CENTER",
                 "confidence": 1.0,
-                "y": y,
-                "forward": self._forward_value(y, height),
+                "y": item["y"],
+                "forward": self._forward_value(item["y"], height),
                 "segments": [],
             }
-            for y, dashed_x in sorted(dashed_map.items(), key=lambda item: item[0])
+            for item in sorted(tracked, key=lambda value: value["y"])
         ]
 
     def _fit_center_path(self, measurements):
@@ -883,20 +734,10 @@ class LaneController:
             predicted_width * cfg.TRACK_WIDTH_PAIR_TOLERANCE_RATIO,
         )
 
-    def _track_right_boundary(self, mask, rows, dashed_map=None):
-        """아래에서 위로 이어지는 오른쪽 실선을 먼저 고정 추적합니다.
-
-        점선이 화면 오른쪽에 있으면 점선보다 왼쪽 실선 중 가장 오른쪽을
-        선택해 주차장 등 점선 오른쪽 가짜 실선을 배제합니다.
-        """
+    def _track_right_boundary(self, mask, rows):
+        """아래에서 위로 이어지는 오른쪽 실선을 먼저 고정 추적합니다."""
         height, width = mask.shape
-        if dashed_map is None:
-            dashed_map = self._track_dashed_positions(mask, rows)
-        dashed_mode_right, dashed_positions = self._dashed_tracking_context(
-            dashed_map, rows, width
-        )
         minimum_x = scale_x(cfg.TRACK_RIGHT_MIN_X, width)
-        solid_left_margin = scale_x(cfg.TRACK_DASHED_SOLID_LEFT_MARGIN, width)
         tracked = []
         missing_rows = 0
 
@@ -932,14 +773,6 @@ class LaneController:
                 item for item in segments
                 if item["x"] >= max(minimum_x, side_minimum)
             ]
-            dashed_x = dashed_positions.get(float(y))
-            dashed_on_right = dashed_mode_right and dashed_x is not None
-            if dashed_on_right:
-                left_limit = dashed_x - solid_left_margin
-                candidates = [
-                    item for item in candidates
-                    if item["x"] < left_limit
-                ]
             if not candidates:
                 missing_rows += 1
                 continue
@@ -971,33 +804,22 @@ class LaneController:
                 item for item in candidates
                 if abs(item["x"] - predicted) <= margin
             ]
-            if dashed_on_right:
-                pool = usable if usable else candidates
-                selected = max(
-                    pool,
-                    key=lambda item: (
-                        item["x"]
-                        + min(item["strength"], 600.0) * 0.006
-                    ),
-                )
-            else:
-                if not usable:
-                    missing_rows += 1
-                    continue
-                selected = min(
-                    usable,
-                    key=lambda item: (
-                        abs(item["x"] - predicted)
-                        - min(item["strength"], 600.0) * 0.006
-                    ),
-                )
+            if not usable:
+                missing_rows += 1
+                continue
+
+            selected = min(
+                usable,
+                key=lambda item: (
+                    abs(item["x"] - predicted)
+                    - min(item["strength"], 600.0) * 0.006
+                ),
+            )
             tracked.append({
                 "y": float(y),
                 "right": selected["x"],
                 "right_segment": selected,
                 "segments": segments,
-                "dashed_x": dashed_x,
-                "dashed_on_right": dashed_on_right,
             })
             missing_rows = 0
 
@@ -1202,11 +1024,7 @@ class LaneController:
             height * cfg.TRACK_BOTTOM_RATIO,
             cfg.TRACK_ROW_COUNT,
         )
-        dashed_map = self._track_dashed_positions(mask, rows)
-        dashed_mode_right, dashed_positions = self._dashed_tracking_context(
-            dashed_map, rows, width
-        )
-        right_track = self._track_right_boundary(mask, rows, dashed_map)
+        right_track = self._track_right_boundary(mask, rows)
         if self._avoid_right_only_active():
             width_model = (
                 self.width_coefficients
@@ -1235,23 +1053,8 @@ class LaneController:
                 minimum_width,
                 maximum_width,
             )
-            dashed_x = item.get("dashed_x")
-            dashed_on_right = (
-                dashed_mode_right
-                and dashed_x is not None
-                and item.get("dashed_on_right", False)
-            )
             left_candidates = []
-            if dashed_on_right and dashed_x is not None:
-                measured_width = dashed_x - item["right"]
-                if minimum_width <= measured_width <= maximum_width:
-                    left_candidates.append(
-                        (
-                            {"x": item["right"], "width": 0, "strength": 0.0},
-                            measured_width,
-                        )
-                    )
-            elif not self._avoid_right_only_active():
+            if not self._avoid_right_only_active():
                 for segment in item["segments"]:
                     if segment["width"] > max_left_segment_width:
                         continue
@@ -1265,28 +1068,19 @@ class LaneController:
                     left_candidates,
                     key=lambda value: abs(value[1] - predicted_width),
                 )
-                if not dashed_on_right:
-                    tolerance = self._width_tolerance(predicted_width, width)
-                    if abs(selected_left[1] - predicted_width) > tolerance * 1.20:
-                        selected_left = None
+                tolerance = self._width_tolerance(predicted_width, width)
+                if abs(selected_left[1] - predicted_width) > tolerance * 1.20:
+                    selected_left = None
 
             if selected_left is not None:
                 left_segment, measured_lane_width = selected_left
                 left_x = left_segment["x"]
-                if dashed_on_right:
-                    center_width = (
-                        predicted_width
-                        + (measured_lane_width - predicted_width)
-                        * cfg.TRACK_PAIR_CENTER_BLEND
-                    )
-                    center = left_x + center_width * 0.5
-                else:
-                    center_width = (
-                        predicted_width
-                        + (measured_lane_width - predicted_width)
-                        * cfg.TRACK_PAIR_CENTER_BLEND
-                    )
-                    center = item["right"] - center_width * 0.5
+                center_width = (
+                    predicted_width
+                    + (measured_lane_width - predicted_width)
+                    * cfg.TRACK_PAIR_CENTER_BLEND
+                )
+                center = item["right"] - center_width * 0.5
                 lane_width = measured_lane_width
                 source = "BOTH"
                 confidence = 1.0
