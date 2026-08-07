@@ -122,9 +122,6 @@ class LaneController:
         bottom = min(cfg.ROI_BOTTOM, frame.shape[0])
         top = min(cfg.ROI_TOP, bottom - 1)
         roi = frame[top:bottom, :]
-        width = roi.shape[1]
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
         saturation = hsv[:, :, 1]
         value = hsv[:, :, 2]
@@ -138,17 +135,10 @@ class LaneController:
             (value >= cfg.LANE_WHITE_VALUE_MIN)
             & (saturation <= cfg.LANE_WHITE_SATURATION_MAX)
         ).astype(np.uint8) * 255
-        blur_size = cfg.LANE_LOCAL_BLUR_SIZE | 1
-        local_mean = cv2.GaussianBlur(gray, (blur_size, blur_size), 0)
-        contrast = cv2.subtract(gray, local_mean)
-        white = cv2.bitwise_and(
-            white,
-            (contrast >= cfg.LANE_LOCAL_CONTRAST_MIN).astype(np.uint8) * 255,
-        )
         mask = cv2.morphologyEx(
             white,
             cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(cv2.MORPH_RECT, (1, 9)),
+            cv2.getStructuringElement(cv2.MORPH_RECT, (3, 9)),
         )
         mask = cv2.morphologyEx(
             mask,
@@ -157,44 +147,17 @@ class LaneController:
         )
         if cfg.BOX_FILTER_ENABLED:
             mask = LaneController._remove_box_structures(mask)
-        mask = LaneController._remove_floor_blobs(mask, width)
         return roi, mask, cfg.LANE_WHITE_VALUE_MIN
 
     @staticmethod
     def _clear_left_mask_band(mask, width, lane_offset_lanes=0.0):
-        """왼쪽 회색 주차장 영역을 마스크에서 강제로 제거합니다."""
-        if lane_offset_lanes != 0.0:
-            cutoff = int(scale_x(cfg.LANE_MASK_CLEAR_LEFT_MAX_X_AVOID, width))
-        else:
-            cutoff = int(scale_x(cfg.LANE_MASK_CLEAR_LEFT_MAX_X, width))
+        """회피 중에만 왼쪽 주차장 영역을 마스크에서 제거합니다."""
+        if lane_offset_lanes == 0.0:
+            return mask
+        cutoff = int(scale_x(cfg.LANE_MASK_CLEAR_LEFT_MAX_X_AVOID, width))
         if cutoff > 0:
             mask[:, :cutoff] = 0
         return mask
-
-    @staticmethod
-    def _remove_floor_blobs(mask, width):
-        """가로로 넓은 회색 바닥 덩어리를 지우고 얇은 선만 남깁니다."""
-        max_area = int(scale_x(cfg.MASK_FLOOR_BLOB_MAX_AREA, width))
-        left_band = width * cfg.LANE_MASK_LEFT_BAND_RATIO
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
-            mask, connectivity=8
-        )
-        cleaned = np.zeros_like(mask)
-        for label in range(1, num_labels):
-            area = int(stats[label, cv2.CC_STAT_AREA])
-            blob_w = int(stats[label, cv2.CC_STAT_WIDTH])
-            blob_h = int(stats[label, cv2.CC_STAT_HEIGHT])
-            blob_left = int(stats[label, cv2.CC_STAT_LEFT])
-            aspect = max(blob_w, blob_h) / max(1, min(blob_w, blob_h))
-            centroid_x = float(centroids[label][0])
-            if (
-                area > max_area * 0.45
-                and (centroid_x < left_band or blob_left <= 2)
-            ):
-                continue
-            if area <= max_area or aspect >= cfg.MASK_FLOOR_BLOB_MAX_ASPECT:
-                cleaned[labels == label] = 255
-        return cleaned
 
     @staticmethod
     def _remove_box_structures(mask):
