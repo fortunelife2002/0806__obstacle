@@ -224,6 +224,16 @@ TRACK_WIDTH_MIN_PAIR_ROWS = 3
 TRACK_WIDTH_MIN_PAIR_COVERAGE = 0.16
 TRACK_WIDTH_FILTER = 0.82
 TRACK_PAIR_CENTER_BLEND = 0.45
+# 점선이 화면 오른쪽에 있을 때(차선 변경·회피) 실선을 고르는 규칙입니다.
+# 점선 X가 width * 이 비율보다 오른쪽이면(75백분위 기준) 점선 왼쪽 실선 중
+# 가장 오른쪽을 오른쪽 경계로 씁니다.
+TRACK_DASHED_RIGHT_MIN_RATIO = 0.45
+# 실선은 점선보다 최소 이 거리(px, 640기준)만큼 왼쪽에 있어야 합니다.
+TRACK_DASHED_SOLID_LEFT_MARGIN = 8.0
+# 점선 후보는 전체 추적 행 중 이 비율만큼만 보여야 합니다(간헐 출현).
+TRACK_DASHED_MIN_ROW_RATIO = 0.28
+TRACK_DASHED_MAX_ROW_RATIO = 0.78
+TRACK_DASHED_TARGET_ROW_RATIO = 0.50
 
 # -------------------------------------------------------------------
 # 중앙선(1·2차선 사이 점선) 전용 추종 모드

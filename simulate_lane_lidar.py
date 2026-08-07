@@ -62,6 +62,60 @@ def make_synthetic_track_frame(width=640, height=480):
     return frame
 
 
+def make_dashed_right_test_mask(width=640, height=480):
+    """점선 오른쪽·가짜 실선 오른쪽 시나리오용 직접 마스크."""
+    mask = np.zeros((height, width), dtype=np.uint8)
+    for y in range(int(height * 0.12), int(height * 0.95), 8):
+        mask[y - 2:y + 3, 352:362] = 255
+        mask[y - 2:y + 3, 548:558] = 255
+        if (y // 20) % 2 == 0:
+            mask[y - 2:y + 3, 446:456] = 255
+    return mask
+
+
+def simulate_dashed_right_solid_selection():
+    """점선 오른쪽일 때 점선 왼쪽 실선 중 가장 오른쪽을 고르는지 검증."""
+    controller = LaneController()
+    controller.set_lane_offset(1.0)
+    mask = make_dashed_right_test_mask()
+    measurements = controller._collect_measurements(mask)
+    if not measurements:
+        print("=== 점선-오른쪽 실선 선택 ===")
+        print("FAIL: 측정값 없음")
+        return False
+
+    control_y = mask.shape[0] * cfg.CONTROL_Y_RATIOS[0]
+    near = min(measurements, key=lambda item: abs(item["y"] - control_y))
+    dashed_map = controller._track_dashed_positions(
+        mask,
+        np.linspace(
+            mask.shape[0] * cfg.TRACK_TOP_RATIO,
+            mask.shape[0] * cfg.TRACK_BOTTOM_RATIO,
+            cfg.TRACK_ROW_COUNT,
+        ),
+    )
+    dashed_x = dashed_map.get(near["y"])
+    ok = (
+        near["right"] is not None
+        and dashed_x is not None
+        and near["right"] < dashed_x
+        and 340 <= near["right"] <= 370
+        and near["left"] is not None
+        and abs(near["left"] - near["right"]) < 1.0
+        and near["source"] == "BOTH"
+    )
+    left_text = (
+        f"{near['left']:.0f}" if near["left"] is not None else "None"
+    )
+    print("=== 점선-오른쪽 실선 선택 ===")
+    print(
+        f"right={near['right']:.0f} dashed={dashed_x:.0f} "
+        f"left={left_text} source={near['source']}"
+    )
+    print(f"결과: {'PASS' if ok else 'FAIL'}")
+    return ok
+
+
 def simulate_mask():
     import cv2
 
@@ -128,9 +182,11 @@ def simulate_lidar_distances():
 
 def main():
     mask_ok = simulate_mask()
+    dashed_ok = simulate_dashed_right_solid_selection()
     lidar_ok = simulate_lidar_distances()
     print("\n=== 결과 ===")
     print(f"마스크(바닥 덩어리 억제): {'PASS' if mask_ok else 'CHECK'}")
+    print(f"점선-오른쪽 실선 선택: {'PASS' if dashed_ok else 'CHECK'}")
     print(f"라이다 150cm/50cm 감지: {'PASS' if lidar_ok else 'CHECK'}")
     if cfg.LIDAR_FRONT_ANGLE == 0.0:
         print(
