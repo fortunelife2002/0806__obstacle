@@ -209,6 +209,31 @@ TRACK_WIDTH_MIN_PAIR_COVERAGE = 0.16
 TRACK_WIDTH_FILTER = 0.82
 TRACK_PAIR_CENTER_BLEND = 0.45
 
+# -------------------------------------------------------------------
+# 중앙선(1·2차선 사이 점선) 전용 추종 모드
+# -------------------------------------------------------------------
+# True면 좌우 경계/차선 폭 추정 대신 점선만 직접 추적합니다. 회색 바닥을
+# 왼쪽 차선으로 오인하는 문제를 피하고, 차선 변경 시 점선이 화면 왼쪽↔
+# 오른쪽으로 이동하는 것을 정상 주행으로 취급합니다.
+CENTER_LINE_MODE = True
+# 2차선(기본)에서 점선이 보이길 원하는 화면 X(640기준). 회피 오프셋은
+# 여기에 차선 폭을 더해 1차선(점선이 오른쪽) 목표를 만듭니다.
+CENTER_LINE_TARGET_X = 220.0
+CENTER_LINE_MIN_POINTS = 5
+CENTER_LINE_MIN_COVERAGE = 0.28
+CENTER_LINE_MIN_CONFIDENCE = 0.30
+CENTER_LINE_MAX_SEGMENT_WIDTH = 28.0
+CENTER_LINE_SEARCH_MARGIN = 90.0
+CENTER_LINE_GAP_GROWTH = 55.0
+CENTER_LINE_SEARCH_MIN_RATIO = 0.08
+CENTER_LINE_SEARCH_MAX_RATIO = 0.72
+# 차선 변경 시 점선이 화면 한쪽→다른 쪽으로 크게 움직여도 허용합니다.
+CENTER_LINE_MAX_NEAR_JUMP = 200.0
+CENTER_LINE_MAX_MIDDLE_JUMP = 240.0
+CENTER_LINE_MAX_PREVIEW_JUMP = 280.0
+CENTER_LINE_MAX_FAR_JUMP = 320.0
+CENTER_LINE_MAX_FIT_RMSE = 28.0
+
 # 한쪽 차선만 보일 때의 안전 추적 설정입니다. 양쪽 차선으로 폭을 먼저
 # 학습한 뒤에만 사용하며, 보이는 경계와 저장된 폭으로 중앙을 복원합니다.
 SINGLE_LANE_ENABLED = True

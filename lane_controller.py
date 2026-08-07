@@ -63,6 +63,7 @@ class LaneController:
         self.curve_target_offset_state = 0.0
         self.left_anchor_error_state = 0.0
         self.left_anchor_age = cfg.LEFT_ANCHOR_MEMORY_FRAMES + 1
+        self.center_missing_rows = 0
         # [2026-08-06 Claude 추가] 라이다 장애물 회피용 차선 오프셋(단위:
         # 학습된 차선 폭의 배수). 0.0=평소처럼 지금 차선 중앙을 목표로
         # 하고, 양수/음수면 obstacle_detector.AvoidanceController가
@@ -110,6 +111,7 @@ class LaneController:
         self.curve_target_offset_state = 0.0
         self.left_anchor_error_state = 0.0
         self.left_anchor_age = cfg.LEFT_ANCHOR_MEMORY_FRAMES + 1
+        self.center_missing_rows = 0
 
     @staticmethod
     def _make_mask(frame):
@@ -535,6 +537,140 @@ class LaneController:
             if abs(candidate["y"] - target_y) <= maximum_y_gap:
                 left_item = candidate
         return right_item, left_item
+
+    def _center_line_rows(self, height):
+        return np.linspace(
+            height * cfg.TRACK_TOP_RATIO,
+            height * cfg.TRACK_BOTTOM_RATIO,
+            cfg.TRACK_ROW_COUNT,
+        )
+
+    def _collect_center_line_measurements(self, mask, height, width):
+        """1·2차선 사이 점선(중앙선) 세그먼트만 행 단위로 추적합니다."""
+        rows = self._center_line_rows(height)
+        default_x = scale_x(cfg.CENTER_LINE_TARGET_X, width)
+        max_segment_width = scale_x(cfg.CENTER_LINE_MAX_SEGMENT_WIDTH, width)
+        tracked = []
+        missing_rows = 0
+
+        for y in sorted(rows, reverse=True):
+            segments = [
+                item for item in self._row_segments(mask, y)
+                if item["width"] <= max_segment_width
+            ]
+            if not segments:
+                missing_rows += 1
+                continue
+
+            predicted = self._previous_center(y, height, default_x)
+            if tracked:
+                previous = tracked[-1]
+                predicted = previous["x"]
+                if len(tracked) >= 2:
+                    older = tracked[-2]
+                    dy = previous["y"] - older["y"]
+                    if abs(dy) > 1.0:
+                        slope = (previous["x"] - older["x"]) / dy
+                        predicted += slope * (y - previous["y"])
+
+            margin = scale_x(
+                cfg.CENTER_LINE_SEARCH_MARGIN
+                + min(missing_rows, 3) * cfg.CENTER_LINE_GAP_GROWTH,
+                width,
+            )
+            usable = [
+                item for item in segments
+                if abs(item["x"] - predicted) <= margin
+            ]
+            if not usable and not tracked:
+                x_min = width * cfg.CENTER_LINE_SEARCH_MIN_RATIO
+                x_max = width * cfg.CENTER_LINE_SEARCH_MAX_RATIO
+                usable = [
+                    item for item in segments
+                    if x_min <= item["x"] <= x_max
+                ]
+            if not usable:
+                missing_rows += 1
+                continue
+
+            selected = min(
+                usable,
+                key=lambda item: (
+                    abs(item["x"] - predicted)
+                    - min(item["strength"], 600.0) * 0.006
+                ),
+            )
+            tracked.append({
+                "y": float(y),
+                "x": selected["x"],
+            })
+            missing_rows = 0
+
+        lane_width = scale_x(cfg.LANE_BANDS[0]["width"], width)
+        return [
+            {
+                "center": item["x"],
+                "left": None,
+                "right": None,
+                "lane_width": lane_width,
+                "source": "CENTER",
+                "confidence": 1.0,
+                "y": item["y"],
+                "forward": self._forward_value(item["y"], height),
+                "segments": [],
+            }
+            for item in sorted(tracked, key=lambda value: value["y"])
+        ]
+
+    def _fit_center_path(self, measurements):
+        """중앙선 측정값만으로 경로를 맞춥니다."""
+        if len(measurements) < cfg.CENTER_LINE_MIN_POINTS:
+            return None, [], 0.0
+        coverage = (
+            max(item["forward"] for item in measurements)
+            - min(item["forward"] for item in measurements)
+        )
+        if coverage < cfg.CENTER_LINE_MIN_COVERAGE:
+            return None, [], 0.0
+
+        forward = np.asarray(
+            [item["forward"] for item in measurements], dtype=np.float64
+        )
+        centers = np.asarray(
+            [item["center"] for item in measurements], dtype=np.float64
+        )
+        weights = np.asarray(
+            [item["confidence"] for item in measurements], dtype=np.float64
+        )
+        coefficients = np.polyfit(forward, centers, 2, w=weights)
+        coefficients = np.pad(coefficients, (1, 0))
+        rmse = float(np.sqrt(np.mean(
+            (centers - np.polyval(coefficients, forward)) ** 2
+        )))
+        if rmse > cfg.CENTER_LINE_MAX_FIT_RMSE:
+            return None, measurements, 0.0
+
+        point_ratio = min(1.0, len(measurements) / cfg.TRACK_ROW_COUNT)
+        coverage_ratio = min(1.0, coverage / 0.65)
+        confidence = point_ratio * 0.55 + coverage_ratio * 0.45
+        if confidence < cfg.CENTER_LINE_MIN_CONFIDENCE:
+            return None, measurements, confidence
+        return coefficients, measurements, confidence
+
+    def _path_jump_limits(self):
+        if cfg.CENTER_LINE_MODE:
+            return (
+                cfg.CENTER_LINE_MAX_NEAR_JUMP,
+                cfg.CENTER_LINE_MAX_MIDDLE_JUMP,
+                cfg.CENTER_LINE_MAX_PREVIEW_JUMP,
+                cfg.CENTER_LINE_MAX_FAR_JUMP,
+            )
+        return (
+            cfg.TRACK_MAX_NEAR_JUMP,
+            cfg.TRACK_MAX_MIDDLE_JUMP,
+            cfg.TRACK_MAX_PREVIEW_JUMP,
+            cfg.TRACK_MAX_FAR_JUMP,
+        )
 
     @staticmethod
     def _width_tolerance(predicted_width, width):
@@ -1250,12 +1386,7 @@ class LaneController:
                 cfg.PREVIEW_Y_RATIO,
                 cfg.CONTROL_Y_RATIOS[2],
             )
-            maximum_jumps = (
-                cfg.TRACK_MAX_NEAR_JUMP,
-                cfg.TRACK_MAX_MIDDLE_JUMP,
-                cfg.TRACK_MAX_PREVIEW_JUMP,
-                cfg.TRACK_MAX_FAR_JUMP,
-            )
+            maximum_jumps = self._path_jump_limits()
             forwards = np.asarray([
                 self._forward_value(height * ratio, height)
                 for ratio in sample_ratios
@@ -1327,7 +1458,7 @@ class LaneController:
             0.0,
             1.0,
         )
-        if status == "TRACKING":
+        if status in ("TRACKING", "CENTER_TRACKING"):
             requested_curve_margin = clamp(
                 (
                     heading_error * cfg.CURVE_OUTSIDE_HEADING_GAIN
@@ -1344,12 +1475,18 @@ class LaneController:
             * requested_curve_margin
         )
         curve_margin = self.curve_target_offset_state
-        near_target = scale_x(
-            cfg.CONTROL_TARGET_X[0] + curve_margin, width
+        base_target_x = (
+            cfg.CENTER_LINE_TARGET_X
+            if cfg.CENTER_LINE_MODE
+            else cfg.CONTROL_TARGET_X[0]
         )
-        right_item, left_item = self._boundary_items_at_control(
-            height, width, measurements, status
-        )
+        near_target = scale_x(base_target_x + curve_margin, width)
+        if cfg.CENTER_LINE_MODE:
+            right_item, left_item = None, None
+        else:
+            right_item, left_item = self._boundary_items_at_control(
+                height, width, measurements, status
+            )
         offset_lane_width_px = 0.0
         # 오프셋을 적용하기 전, "평소 정면 기준선"을 따로 기억해둡니다.
         # 회피 중 왼쪽 점선이 이 기준선 왼쪽/오른쪽 중 어디 있는지로
@@ -1381,7 +1518,7 @@ class LaneController:
             (path_x[2] - preview_x) * cfg.REFERENCE_WIDTH / width
         )
 
-        if status == "TRACKING":
+        if status in ("TRACKING", "CENTER_TRACKING"):
             preview_weight = min(
                 cfg.PREVIEW_MAX_WEIGHT,
                 cfg.PREVIEW_TRACKING_WEIGHT
@@ -1421,7 +1558,7 @@ class LaneController:
         near_right = None
         right_guard = 0.0
         right_hard = False
-        if right_item is not None:
+        if not cfg.CENTER_LINE_MODE and right_item is not None:
             right_inferred = bool(
                 right_item.get("inferred_boundary", False)
             )
@@ -1466,7 +1603,7 @@ class LaneController:
 
         left_guard = 0.0
         left_hard = False
-        if left_item is not None:
+        if not cfg.CENTER_LINE_MODE and left_item is not None:
             left_inferred = bool(
                 left_item.get("inferred_boundary", False)
             )
@@ -1561,7 +1698,10 @@ class LaneController:
         # 좌우로 바뀌지 않게 합니다.
         left_anchor_error = 0.0
         left_anchor_active = False
-        if abs(signed_curvature) >= cfg.LEFT_ANCHOR_CURVE_TRIGGER:
+        if (
+            not cfg.CENTER_LINE_MODE
+            and abs(signed_curvature) >= cfg.LEFT_ANCHOR_CURVE_TRIGGER
+        ):
             if (
                 left_item is not None
                 and not left_item.get("inferred_boundary", False)
@@ -1697,36 +1837,45 @@ class LaneController:
 
         roi, mask, threshold = self._make_mask(frame)
         height, width = mask.shape
-        measurements = self._collect_measurements(mask)
-        coefficients, inliers, confidence = self._fit_path(measurements)
-        paired_points = sum(
-            item["source"] == "BOTH" for item in inliers
-        )
-        # 한쪽 선만 보이는 결과를 일반 양쪽 차선 결과로 통과시키지 않습니다.
-        # 잠금 이후의 단일 차선 전용 검사에서만 안전하게 허용합니다.
-        if (
-            coefficients is not None
-            and paired_points < cfg.TRACK_WIDTH_MIN_PAIR_ROWS
-            and not (
-                self.width_coefficients is not None
-                and self.width_model_age == 0
-            )
-        ):
-            coefficients = None
-
         single_side = None
-        if coefficients is None:
-            (
-                single_coefficients,
-                single_inliers,
-                single_confidence,
-                single_side,
-            ) = self._try_single_lane(mask, height, width)
-            if single_coefficients is not None:
-                coefficients = single_coefficients
-                measurements = single_inliers
-                inliers = single_inliers
-                confidence = single_confidence
+        if cfg.CENTER_LINE_MODE:
+            measurements = self._collect_center_line_measurements(
+                mask, height, width
+            )
+            coefficients, inliers, confidence = self._fit_center_path(
+                measurements
+            )
+            measurements = inliers
+        else:
+            measurements = self._collect_measurements(mask)
+            coefficients, inliers, confidence = self._fit_path(measurements)
+            paired_points = sum(
+                item["source"] == "BOTH" for item in inliers
+            )
+            # 한쪽 선만 보이는 결과를 일반 양쪽 차선 결과로 통과시키지 않습니다.
+            # 잠금 이후의 단일 차선 전용 검사에서만 안전하게 허용합니다.
+            if (
+                coefficients is not None
+                and paired_points < cfg.TRACK_WIDTH_MIN_PAIR_ROWS
+                and not (
+                    self.width_coefficients is not None
+                    and self.width_model_age == 0
+                )
+            ):
+                coefficients = None
+
+            if coefficients is None:
+                (
+                    single_coefficients,
+                    single_inliers,
+                    single_confidence,
+                    single_side,
+                ) = self._try_single_lane(mask, height, width)
+                if single_coefficients is not None:
+                    coefficients = single_coefficients
+                    measurements = single_inliers
+                    inliers = single_inliers
+                    confidence = single_confidence
 
         detected = self._accept_and_filter_path(
             coefficients, height, width
@@ -1741,6 +1890,14 @@ class LaneController:
                 self.single_lane_side = single_side
                 self.single_lane_frames += 1
                 status = f"SINGLE_{single_side}"
+            elif cfg.CENTER_LINE_MODE:
+                self.single_lane_side = None
+                self.single_lane_frames = 0
+                status = (
+                    "CENTER_TRACKING"
+                    if self.path_locked
+                    else "CENTER_CONFIRMING"
+                )
             else:
                 self.single_lane_side = None
                 self.single_lane_frames = 0
@@ -1756,10 +1913,17 @@ class LaneController:
                 self.single_lane_side = None
                 self.single_lane_frames = 0
             status = (
-                "MEMORY"
+                "CENTER_MEMORY"
+                if cfg.CENTER_LINE_MODE
+                and self.path_locked
+                and self.path_coefficients is not None
+                and self.lost_count <= cfg.MEMORY_FRAMES
+                else "MEMORY"
                 if self.path_locked
                 and self.path_coefficients is not None
                 and self.lost_count <= cfg.MEMORY_FRAMES
+                else "CENTER_LOST"
+                if cfg.CENTER_LINE_MODE
                 else "LOST"
             )
 
@@ -1884,8 +2048,9 @@ class LaneController:
                 target_speed = min(target_speed, cfg.CURVE_MAX_SPEED)
             if status == "MEMORY":
                 target_speed = min(target_speed, cfg.RETURN_SPEED)
-            elif status in ("SINGLE_LEFT", "SINGLE_RIGHT"):
-                target_speed = min(target_speed, cfg.SINGLE_LANE_SPEED)
+            elif status in ("SINGLE_LEFT", "SINGLE_RIGHT", "CENTER_TRACKING", "CENTER_CONFIRMING"):
+                if status in ("SINGLE_LEFT", "SINGLE_RIGHT"):
+                    target_speed = min(target_speed, cfg.SINGLE_LANE_SPEED)
             self.speed_float = (
                 0.78 * self.speed_float + 0.22 * target_speed
             )
@@ -1992,7 +2157,9 @@ class LaneController:
                     roi, (int(item["right"]), y), 3, (0, 0, 255), -1
                 )
             color = (
-                (0, 255, 255)
+                (0, 255, 0)
+                if item["source"] == "CENTER"
+                else (0, 255, 255)
                 if item["source"] == "BOTH"
                 else (0, 165, 255)
             )
@@ -2027,7 +2194,10 @@ class LaneController:
                 # 중간·먼 지점은 고정 X가 아니라 경로 방향 계산에 사용합니다.
                 if index == 0:
                     target_x = int(scale_x(
-                        cfg.CONTROL_TARGET_X[index], width
+                        cfg.CENTER_LINE_TARGET_X
+                        if cfg.CENTER_LINE_MODE
+                        else cfg.CONTROL_TARGET_X[index],
+                        width,
                     ))
                     cv2.circle(
                         roi, (target_x, y), 5, (255, 0, 0), -1
