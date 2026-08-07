@@ -1456,6 +1456,10 @@ class LaneController:
             return True
 
         if not self._is_plausible_path(height, width):
+            # 회피 중 왼쪽 이동 시 경로가 잠깐 급하게 보여도 오른쪽 실선
+            # 추적이 유지되면 MEMORY/LOST로 떨어지지 않게 합니다.
+            if self._avoid_right_only_active():
+                return True
             # 이번 프레임의 경로는 신뢰하지 않고 직전 경로를 그대로
             # 유지합니다(감지 실패와 동일하게 처리 → update()에서 자연히
             # MEMORY로 폴백).
