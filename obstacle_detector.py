@@ -64,6 +64,7 @@ class LidarObstacleDetector:
         # 확인할 수 있도록, 매 스캔에서 가장 가까운 점의 lateral/forward/
         # in_lane 여부를 따로 기억해둡니다(get_debug_info 참고).
         self._nearest_debug = None
+        self._lane_offset_lanes = 0.0
 
         if cfg.LIDAR_ENABLED:
             self._start()
@@ -113,6 +114,26 @@ class LidarObstacleDetector:
         forward = distance * np.cos(angle_diff_rad)
         return distance, lateral, forward
 
+    def set_tracking_lane_offset(self, offset_lanes):
+        """회피 중 감지 코리더를 옆 차선 기준으로 옮깁니다(0=2차선)."""
+        self._lane_offset_lanes = float(offset_lanes)
+
+    def _corridor_lateral_bounds(self, distance_mm):
+        """트랙 40~64cm 구간 + 회피 오프셋 + 거리 보정 slack."""
+        lane_shift_mm = (
+            self._lane_offset_lanes
+            * cfg.AVOID_LANE_DIRECTION
+            * cfg.LIDAR_LANE_WIDTH_MM
+        )
+        slack = distance_mm * cfg.LIDAR_LATERAL_DISTANCE_SLACK_RATIO
+        lateral_min = (
+            cfg.LIDAR_OBSTACLE_LATERAL_MIN_MM - lane_shift_mm - slack
+        )
+        lateral_max = (
+            cfg.LIDAR_OBSTACLE_LATERAL_MAX_MM - lane_shift_mm + slack
+        )
+        return lateral_min, lateral_max
+
     def _hit_in_lane_corridor(self, scan):
         """차량 진행축 기준 "장애물 예상 구간"(트랙 40~64cm) 이내·전방
         감지거리 이내에 점이 하나라도 있으면 (True, 디버그정보)를 반환합니다.
@@ -137,9 +158,10 @@ class LidarObstacleDetector:
             & (distance >= cfg.LIDAR_DETECT_MIN_DISTANCE_MM)
             & (distance <= cfg.LIDAR_DETECT_MAX_DISTANCE_MM)
         )
+        lateral_min, lateral_max = self._corridor_lateral_bounds(distance)
         in_lane = (
-            (lateral >= cfg.LIDAR_OBSTACLE_LATERAL_MIN_MM)
-            & (lateral <= cfg.LIDAR_OBSTACLE_LATERAL_MAX_MM)
+            (lateral >= lateral_min)
+            & (lateral <= lateral_max)
         )
         hit = bool(np.any(in_range & in_lane))
 
@@ -247,6 +269,10 @@ class AvoidanceController:
     def state(self):
         """디버그 표시/로그용. 오프셋이 0이 아니면 옆 차선에 있는 상태."""
         return "AVOIDING" if self._current_offset != 0.0 else "IDLE"
+
+    @property
+    def lane_offset_lanes(self):
+        return self._current_offset
 
     def begin_frame(self, obstacle_detected, lane_controller):
         """카메라 처리 전에 매 프레임 호출합니다.

@@ -191,6 +191,9 @@ def main():
             # 라이다는 카메라와 무관하므로 먼저 확인하고, lane_controller.
             # update(frame) 전에 차선 오프셋을 지시해야 이번 프레임의
             # 카메라 제어 계산에 바로 반영됩니다.
+            lidar_detector.set_tracking_lane_offset(
+                lane_controller._lane_offset_lanes
+            )
             obstacle_detected = lidar_detector.is_obstacle_detected()
             lidar_debug = lidar_detector.get_debug_info()
             avoidance.begin_frame(obstacle_detected, lane_controller)

@@ -84,8 +84,16 @@ ROI_BOTTOM = 480
 # 흰색 차선은 밝고 채도가 낮아야 합니다. 밝기만 사용하면 초록 바닥도
 # 흰색으로 처리되므로 HSV 채도 조건을 반드시 함께 사용합니다.
 WHITE_THRESHOLD = 200
-LANE_WHITE_VALUE_MIN = 175
-LANE_WHITE_SATURATION_MAX = 65
+LANE_WHITE_VALUE_MIN = 185
+LANE_WHITE_SATURATION_MAX = 55
+# 회색 바닥(밝기는 높지만 주변과 차이가 작음)과 흰 차선(주변보다
+# 확실히 밝음)을 구분합니다. _make_mask에서 국소 평균 대비를 씁니다.
+LANE_LOCAL_CONTRAST_MIN = 14.0
+LANE_LOCAL_BLUR_SIZE = 31
+# 마스크에서 넓은 바닥 덩어리를 지울 때 쓰는 최대 면적(640기준 px).
+MASK_FLOOR_BLOB_MAX_AREA = 2800.0
+# 가로로 넓은 덩어리(종횡비 < 이 값)는 바닥으로 보고 제거합니다.
+MASK_FLOOR_BLOB_MAX_ASPECT = 6.0
 REFERENCE_WIDTH = 640.0
 
 # [2026-08-05] 박스형 표시(주차 테스트 칸 등) 오검출 필터. 실차 영상
@@ -501,6 +509,10 @@ LIDAR_OBSTACLE_LATERAL_MAX_MM = (
 # 1m 50cm 이내만 "장애물"로 판단합니다. 라이다 값은 mm 단위입니다.
 LIDAR_DETECT_MIN_DISTANCE_MM = 50.0
 LIDAR_DETECT_MAX_DISTANCE_MM = 1500.0
+# 정면 각도(LIDAR_FRONT_ANGLE) 미세 오차가 멀수록 lateral(mm)로
+# 커집니다. 1.5m에서 ±3°면 약 ±78mm — 이 비율만큼 거리에 비례해
+# 감지 폭을 살짝 넓혀 먼 거리(150cm)에서도 잡히게 합니다.
+LIDAR_LATERAL_DISTANCE_SLACK_RATIO = 0.04
 
 # 노이즈로 인한 오검출을 막기 위해, 연속 스캔에서 이 횟수 이상 감지되어야
 # "장애물 있음"으로 확정합니다.
