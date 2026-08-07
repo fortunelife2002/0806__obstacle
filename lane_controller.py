@@ -143,14 +143,21 @@ class LaneController:
         contrast = cv2.subtract(gray, local_mean)
         parking_cutoff = int(scale_x(cfg.LANE_MASK_PARKING_MAX_X, width))
         if parking_cutoff > 0:
-            contrast_mask = (
-                contrast >= cfg.LANE_LOCAL_CONTRAST_MIN
+            parking_contrast = (
+                contrast >= cfg.LANE_MASK_PARKING_CONTRAST_MIN
+            ).astype(np.uint8) * 255
+            track_contrast = (
+                contrast >= cfg.LANE_TRACK_CONTRAST_MIN
             ).astype(np.uint8) * 255
             left = cv2.bitwise_and(
                 white[:, :parking_cutoff],
-                contrast_mask[:, :parking_cutoff],
+                parking_contrast[:, :parking_cutoff],
             )
-            white = np.hstack([left, white[:, parking_cutoff:]])
+            track = cv2.bitwise_or(
+                white[:, parking_cutoff:],
+                track_contrast[:, parking_cutoff:],
+            )
+            white = np.hstack([left, track])
         mask = cv2.morphologyEx(
             white,
             cv2.MORPH_CLOSE,
@@ -158,8 +165,7 @@ class LaneController:
         )
         lane_markers = LaneController._extract_lane_markers(mask, width)
         if cfg.BOX_FILTER_ENABLED:
-            mask = LaneController._remove_box_structures(mask)
-        mask = LaneController._remove_parking_floor_blobs(mask, width)
+            mask = LaneController._remove_box_structures(mask, width)
         mask = cv2.bitwise_or(mask, lane_markers)
         return roi, mask, cfg.LANE_WHITE_VALUE_MIN
 
@@ -182,37 +188,8 @@ class LaneController:
 
     @staticmethod
     def _remove_parking_floor_blobs(mask, width):
-        """왼쪽 회색 주차장 등 넓은 바닥만 지우고, 점선·실선은 남깁니다."""
-        max_area = int(scale_x(cfg.MASK_FLOOR_BLOB_MAX_AREA, width))
-        parking_x = scale_x(cfg.LANE_MASK_PARKING_MAX_X, width)
-        min_dash_area = int(scale_x(cfg.LANE_MASK_MIN_DASH_AREA, width))
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
-            mask, connectivity=8
-        )
-        cleaned = np.zeros_like(mask)
-        for label in range(1, num_labels):
-            area = int(stats[label, cv2.CC_STAT_AREA])
-            blob_w = int(stats[label, cv2.CC_STAT_WIDTH])
-            blob_h = int(stats[label, cv2.CC_STAT_HEIGHT])
-            aspect = max(blob_w, blob_h) / max(1, min(blob_w, blob_h))
-            centroid_x = float(centroids[label][0])
-
-            if aspect >= cfg.LANE_MASK_MIN_LINE_ASPECT:
-                cleaned[labels == label] = 255
-                continue
-            if area <= min_dash_area:
-                cleaned[labels == label] = 255
-                continue
-            if centroid_x < parking_x:
-                if (
-                    area > max_area * 0.25
-                    and aspect < cfg.MASK_FLOOR_BLOB_MAX_ASPECT
-                ):
-                    continue
-            elif area > max_area * 2.0 and aspect < 2.5:
-                continue
-            cleaned[labels == label] = 255
-        return cleaned
+        """바닥 덩어리 제거는 비활성(차선까지 지우는 부작용). 호환용 stub."""
+        return mask
 
     @staticmethod
     def _clear_left_mask_band(mask, width, lane_offset_lanes=0.0):
@@ -225,7 +202,7 @@ class LaneController:
         return mask
 
     @staticmethod
-    def _remove_box_structures(mask):
+    def _remove_box_structures(mask, width=None):
         """가로 테두리를 가진 박스형 표시(주차 테스트 칸 등)를 통째로 지웁니다.
 
         [2026-08-05] 신규. 실차 영상(20260805-1032-45, 44초 부근)에서
@@ -300,7 +277,9 @@ class LaneController:
         방식(예: 여러 프레임 연속 확인 후에만 기억 시작, 기억 영역
         높이를 제한)을 실차 영상 여러 개로 먼저 검증해야 한다.
         """
-        width = mask.shape[1]
+        if width is None:
+            width = mask.shape[1]
+        protected = LaneController._extract_lane_markers(mask, width)
         kernel_w = int(round(
             scale_x(cfg.BOX_FILTER_HORIZONTAL_KERNEL_WIDTH, width)
         ))
@@ -334,7 +313,7 @@ class LaneController:
                 max(0, y0 - y_margin):min(height, y1 + y_margin),
                 max(0, x0 - x_margin):min(width, x1 + x_margin),
             ] = 0
-        return cleaned
+        return cv2.bitwise_or(cleaned, protected)
 
     @staticmethod
     def _group_bars_into_ladders(bars, width):
