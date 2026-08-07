@@ -192,7 +192,7 @@ def main():
             # update(frame) 전에 차선 오프셋을 지시해야 이번 프레임의
             # 카메라 제어 계산에 바로 반영됩니다.
             lidar_detector.set_tracking_lane_offset(
-                lane_controller._lane_offset_lanes
+                avoidance.lane_offset_lanes
             )
             obstacle_detected = lidar_detector.is_obstacle_detected()
             lidar_debug = lidar_detector.get_debug_info()
@@ -249,6 +249,7 @@ def main():
                         else "lat=- fwd=- in_lane=- "
                     )
                     + f"avoid_state={avoidance.state} "
+                    f"avoid_phase={avoidance.maneuver_phase or '-'} "
                     f"reason={command['reason']} "
                     f"fps={fps:.1f}"
                 )

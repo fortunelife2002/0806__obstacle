@@ -20,23 +20,11 @@
 2) AvoidanceController
    감지 결과를 받아 실제 회피 기동을 관리하는 상태기계입니다.
 
-   [2026-08-06 Claude 수정 3] 예전에는 "정해진 각도로 정해진 시간만
-   꺾는" 오픈루프(카메라 무시) 방식으로 OUT/HOLD/RETURN 세 구간을
-   시간으로 관리했는데, 실차에서 각도/시간 조합이 너무 민감해
-   (조금만 오차가 나도 과회전하거나 못 미치는 문제 반복) 계속
-   재조정이 필요했습니다.
-
-   지금은 조향을 직접 계산하지 않고, LaneController.set_lane_offset()
-   으로 "목표 차선을 옆으로 옮겨라"라고만 지시합니다. 실제 조향은
-   기존 카메라 차선 추종 PID가 매 프레임 계속 담당하므로, 옆 차선에
-   정확히 안착할 때까지 카메라 피드백이 계속 작동합니다(각도/시간을
-   따로 맞출 필요가 없어짐).
-
-   [2026-08-06 Claude 수정 7] "장애물이 없으면 자동으로 복귀"하는 로직을
-   완전히 없앴습니다. 자동 복귀라는 개념 자체가 없고, 장애물을 새로
-   감지할 때마다 지금 있는 차선의 옆 차선으로 토글합니다(2차선에서
-   감지->1차선, 다시 1차선에서 감지->2차선). 감지 이벤트가 없으면
-   마지막으로 설정한 차선을 계속 유지합니다.
+   [오픈루프 회피] 장애물 상승 에지에서 옆 차선으로 토글한 뒤,
+   AVOID_OPEN_LOOP_OUT_SECONDS 동안 최대 조향 →
+   AVOID_OPEN_LOOP_COUNTER_SECONDS 동안 반대 최대 조향으로 자세를 맞추고,
+   이후 카메라 차선 추종으로 넘깁니다. 기동 중 속도는 AVOID_OPEN_LOOP_SPEED
+   (기본 120)로 고정합니다.
 """
 
 import threading
@@ -241,81 +229,153 @@ class LidarObstacleDetector:
 
 
 class AvoidanceController:
-    """라이다로 장애물을 새로 감지할 때마다 목표 차선을 토글합니다.
+    """라이다 장애물 감지 시 오픈루프 차선 변경 후 카메라 추종으로 넘깁니다.
 
-    [2026-08-06 Claude 수정 7] "장애물이 없으면 자동으로 복귀"하는 로직을
-    전부 없앴습니다. 이제 자동 복귀라는 개념 자체가 없습니다 — 장애물을
-    새로 감지할 때마다(연속 감지 중에는 한 번만) 지금 있는 차선의 "옆"
-    차선으로 목표를 토글합니다. 2차선에 있을 때 감지되면 1차선으로,
-    그 뒤 1차선에 있을 때 또 감지되면 다시 2차선으로 — 감지 이벤트가
-    없으면 마지막으로 설정된 차선을 계속 유지합니다.
-
-    조향은 직접 계산하지 않습니다 — LaneController.set_lane_offset()으로
-    목표 차선만 지시하고, 실제 조향은 매 프레임 카메라 차선 추종 PID가
-    계속 담당합니다. 그래서 이 클래스는 두 단계로 나눠 호출해야 합니다.
-
-      1) begin_frame(): lane_controller.update(frame) 하기 "전"에 호출.
-         장애물이 새로 감지된 순간(연속 감지 중 첫 프레임)에만 토글합니다.
-      2) finalize_frame(): lane_controller.update(frame) 하고 난 "후"에
-         호출. 최종 speed/steering과 디버그용 reason을 반환합니다.
+    begin_frame / finalize_frame 호출 순서는 main.py 주석을 참고하세요.
     """
 
     def __init__(self):
         self._current_offset = 0.0
         self._was_detected = False
         self._toggle_hold_until = 0.0
+        self._maneuver_phase = None
+        self._phase_until = 0.0
+        self._maneuver_target_offset = 0.0
 
     @property
     def state(self):
-        """디버그 표시/로그용. 오프셋이 0이 아니면 옆 차선에 있는 상태."""
-        return "AVOIDING" if self._current_offset != 0.0 else "IDLE"
+        """디버그 표시/로그용."""
+        if self._maneuver_phase == "OUT":
+            return "AVOID_OUT"
+        if self._maneuver_phase == "COUNTER":
+            return "AVOID_COUNTER"
+        if self._current_offset != 0.0:
+            return "AVOIDING"
+        return "IDLE"
 
     @property
     def lane_offset_lanes(self):
         return self._current_offset
 
-    def begin_frame(self, obstacle_detected, lane_controller):
-        """카메라 처리 전에 매 프레임 호출합니다.
+    @property
+    def maneuver_phase(self):
+        return self._maneuver_phase
 
-        obstacle_detected가 이전 프레임엔 False였다가 이번 프레임 True로
-        바뀐 "상승 에지"에서만 토글합니다 — 같은 장애물이 여러 프레임
-        연속으로 감지돼도 한 번만 반응하고, 그 장애물을 계속 볼 때마다
-        매번 반대쪽으로 토글하는 걸 막습니다. AVOID_TOGGLE_HOLD_SECONDS
-        동안은 감지가 잠깐 끊겼다 다시 잡혀도 토글을 막아 차선 변경
-        도중 목표가 원위치로 돌아가는 것을 방지합니다.
-        """
+    @property
+    def in_open_loop(self):
+        return self._maneuver_phase is not None
+
+    @staticmethod
+    def _open_loop_duration():
+        if not cfg.AVOID_OPEN_LOOP_ENABLED:
+            return 0.0
+        return (
+            cfg.AVOID_OPEN_LOOP_OUT_SECONDS
+            + cfg.AVOID_OPEN_LOOP_COUNTER_SECONDS
+        )
+
+    def _moving_to_left_lane(self):
+        return self._maneuver_target_offset != 0.0
+
+    def _out_steering(self):
+        if self._moving_to_left_lane():
+            return cfg.AVOID_OPEN_LOOP_STEER_LEFT
+        return cfg.AVOID_OPEN_LOOP_STEER_RIGHT
+
+    def _counter_steering(self):
+        if self._moving_to_left_lane():
+            return cfg.AVOID_OPEN_LOOP_STEER_RIGHT
+        return cfg.AVOID_OPEN_LOOP_STEER_LEFT
+
+    def _start_open_loop_maneuver(self, now, target_offset):
+        self._maneuver_target_offset = float(target_offset)
+        self._maneuver_phase = "OUT"
+        self._phase_until = now + cfg.AVOID_OPEN_LOOP_OUT_SECONDS
+        direction = "왼쪽(1차선)" if self._moving_to_left_lane() else "오른쪽(2차선)"
+        print(
+            "AVOID_OPEN_LOOP: "
+            f"{direction}으로 이동 시작 "
+            f"(OUT {cfg.AVOID_OPEN_LOOP_OUT_SECONDS:.1f}s "
+            f"STR={self._out_steering()}, "
+            f"SPD={cfg.AVOID_OPEN_LOOP_SPEED})"
+        )
+
+    def _advance_open_loop_maneuver(self, now):
+        if self._maneuver_phase is None:
+            return
+        if now < self._phase_until:
+            return
+        if self._maneuver_phase == "OUT":
+            self._maneuver_phase = "COUNTER"
+            self._phase_until = now + cfg.AVOID_OPEN_LOOP_COUNTER_SECONDS
+            print(
+                "AVOID_OPEN_LOOP: 반대 조향 보정 "
+                f"(COUNTER {cfg.AVOID_OPEN_LOOP_COUNTER_SECONDS:.1f}s "
+                f"STR={self._counter_steering()}, "
+                f"SPD={cfg.AVOID_OPEN_LOOP_SPEED})"
+            )
+            return
+        if self._maneuver_phase == "COUNTER":
+            self._maneuver_phase = None
+            self._phase_until = 0.0
+            print("AVOID_OPEN_LOOP: 기동 완료, 카메라 차선 추종으로 전환")
+
+    def begin_frame(self, obstacle_detected, lane_controller):
+        """카메라 처리 전에 매 프레임 호출합니다."""
         now = time.monotonic()
+        self._advance_open_loop_maneuver(now)
+
         if obstacle_detected and not self._was_detected:
-            if now >= self._toggle_hold_until:
-                self._current_offset = (
+            if (
+                now >= self._toggle_hold_until
+                and self._maneuver_phase is None
+            ):
+                new_offset = (
                     0.0
                     if self._current_offset != 0.0
                     else cfg.AVOID_LANE_OFFSET_LANES
                 )
-                lane_controller.set_lane_offset(self._current_offset)
-                self._toggle_hold_until = (
-                    now + cfg.AVOID_TOGGLE_HOLD_SECONDS
+                self._current_offset = new_offset
+                maneuver_duration = self._open_loop_duration()
+                hold_seconds = max(
+                    cfg.AVOID_TOGGLE_HOLD_SECONDS,
+                    maneuver_duration + 0.5,
                 )
-                target = "옆" if self._current_offset != 0.0 else "원래"
-                print(
-                    "AVOID_TOGGLE: 내 차선 전방 "
-                    f"{cfg.LIDAR_DETECT_MAX_DISTANCE_MM:.0f}mm 이내 장애물 감지, "
-                    f"{target} 차선을 목표로 옮깁니다(카메라가 계속 보정)."
-                )
+                self._toggle_hold_until = now + hold_seconds
+
+                if cfg.AVOID_OPEN_LOOP_ENABLED:
+                    self._start_open_loop_maneuver(now, new_offset)
+                    lane_controller.set_lane_offset(0.0)
+                else:
+                    lane_controller.set_lane_offset(self._current_offset)
+                    target = "옆" if self._current_offset != 0.0 else "원래"
+                    print(
+                        "AVOID_TOGGLE: 내 차선 전방 "
+                        f"{cfg.LIDAR_DETECT_MAX_DISTANCE_MM:.0f}mm 이내 장애물 감지, "
+                        f"{target} 차선을 목표로 옮깁니다(카메라가 계속 보정)."
+                    )
         self._was_detected = obstacle_detected
 
     def finalize_frame(self, lane_command):
-        """카메라 처리 후 매 프레임 호출합니다.
+        """카메라 처리 후 매 프레임 호출합니다."""
+        now = time.monotonic()
+        self._advance_open_loop_maneuver(now)
 
-        조향은 항상 lane_command(카메라 제어 결과, 이미 오프셋이 반영됨)를
-        그대로 씁니다. 옆 차선에 있는 동안에는 안전하게 속도만 제한합니다.
+        if self._maneuver_phase == "OUT":
+            return {
+                "speed": cfg.AVOID_OPEN_LOOP_SPEED,
+                "steering": self._out_steering(),
+            }, "AVOID_OUT"
 
-        Returns:
-            (command, reason): command는 {"speed", "steering", ...},
-            reason은 디버그 표시/로그용 문자열입니다.
-        """
+        if self._maneuver_phase == "COUNTER":
+            return {
+                "speed": cfg.AVOID_OPEN_LOOP_SPEED,
+                "steering": self._counter_steering(),
+            }, "AVOID_COUNTER"
+
         if self._current_offset != 0.0:
             command = dict(lane_command)
             command["speed"] = min(command["speed"], cfg.AVOID_SPEED)
             return command, "AVOIDING"
+
         return lane_command, "LANE"

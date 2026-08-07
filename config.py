@@ -567,8 +567,17 @@ AVOID_LANE_OFFSET_LANES = 1.0
 # 필요 없습니다.
 AVOID_LANE_DIRECTION = 1
 
-# 회피 중에는 안전하게 이 속도로 제한합니다.
-AVOID_SPEED = 100
+# 회피 중(오픈루프 종료 후 카메라 추종 포함) 속도 상한입니다.
+AVOID_SPEED = 120
+
+# 오픈루프 차선 변경: 최대 조향으로 옆 차선 이동 후 반대 조향으로 자세 보정.
+AVOID_OPEN_LOOP_ENABLED = True
+AVOID_OPEN_LOOP_SPEED = 120
+AVOID_OPEN_LOOP_OUT_SECONDS = 1.5
+AVOID_OPEN_LOOP_COUNTER_SECONDS = 0.4
+# 1차선(왼쪽)으로 갈 때 OUT=STEER_LEFT, COUNTER=STEER_RIGHT 입니다.
+AVOID_OPEN_LOOP_STEER_LEFT = STEER_LEFT
+AVOID_OPEN_LOOP_STEER_RIGHT = STEER_RIGHT
 
 # 장애물 감지 토글 후 이 시간(초) 동안은 감지가 잠깐 끊겼다 다시 잡혀도
 # 목표 차선을 다시 토글하지 않습니다. 차선 변경이 끝나기 전에 라이다
