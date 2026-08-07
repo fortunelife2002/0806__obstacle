@@ -1682,6 +1682,7 @@ class LaneController:
             hard_boundary,
             left_anchor_error,
             left_boundary_side,
+            offset_lane_width_px,
         )
 
     def update(self, frame):
@@ -1692,6 +1693,7 @@ class LaneController:
         else:
             delta_time = clamp(now - self.last_update_time, 0.01, 0.12)
         self.last_update_time = now
+        offset_lane_width_px = 0.0
 
         roi, mask, threshold = self._make_mask(frame)
         height, width = mask.shape
@@ -1786,6 +1788,7 @@ class LaneController:
                 hard_boundary,
                 left_anchor_error,
                 left_boundary_side,
+                offset_lane_width_px,
             ) = self._calculate_control(
                 height, width, measurements, status
             )
@@ -1908,7 +1911,6 @@ class LaneController:
             hard_boundary = 0
             left_anchor_error = 0.0
             left_boundary_side = None
-            offset_lane_width_px = 0.0
             steering = self.previous_steer
             # 최초 차선 확인 전 또는 메모리 허용시간 이후에는 출발하지 않습니다.
             speed = 0
