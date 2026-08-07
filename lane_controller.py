@@ -141,24 +141,44 @@ class LaneController:
         blur_size = cfg.LANE_LOCAL_BLUR_SIZE | 1
         local_mean = cv2.GaussianBlur(gray, (blur_size, blur_size), 0)
         contrast = cv2.subtract(gray, local_mean)
-        white = cv2.bitwise_and(
-            white,
-            (contrast >= cfg.LANE_LOCAL_CONTRAST_MIN).astype(np.uint8) * 255,
-        )
+        parking_cutoff = int(scale_x(cfg.LANE_MASK_PARKING_MAX_X, width))
+        if parking_cutoff > 0:
+            contrast_mask = (
+                contrast >= cfg.LANE_LOCAL_CONTRAST_MIN
+            ).astype(np.uint8) * 255
+            left = cv2.bitwise_and(
+                white[:, :parking_cutoff],
+                contrast_mask[:, :parking_cutoff],
+            )
+            white = np.hstack([left, white[:, parking_cutoff:]])
         mask = cv2.morphologyEx(
             white,
             cv2.MORPH_CLOSE,
             cv2.getStructuringElement(cv2.MORPH_RECT, (3, 9)),
         )
-        mask = cv2.morphologyEx(
-            mask,
-            cv2.MORPH_OPEN,
-            cv2.getStructuringElement(cv2.MORPH_RECT, (1, 3)),
-        )
+        lane_markers = LaneController._extract_lane_markers(mask, width)
         if cfg.BOX_FILTER_ENABLED:
             mask = LaneController._remove_box_structures(mask)
         mask = LaneController._remove_parking_floor_blobs(mask, width)
+        mask = cv2.bitwise_or(mask, lane_markers)
         return roi, mask, cfg.LANE_WHITE_VALUE_MIN
+
+    @staticmethod
+    def _extract_lane_markers(mask, width):
+        """얇은 세로 차선(점선/실선) 픽셀만 추출해 필터 후 복원에 씁니다."""
+        min_dash_area = int(scale_x(cfg.LANE_MASK_MIN_DASH_AREA, width))
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+            mask, connectivity=8
+        )
+        kept = np.zeros_like(mask)
+        for label in range(1, num_labels):
+            area = int(stats[label, cv2.CC_STAT_AREA])
+            blob_w = int(stats[label, cv2.CC_STAT_WIDTH])
+            blob_h = int(stats[label, cv2.CC_STAT_HEIGHT])
+            aspect = max(blob_w, blob_h) / max(1, min(blob_w, blob_h))
+            if aspect >= cfg.LANE_MASK_MIN_LINE_ASPECT or area <= min_dash_area:
+                kept[labels == label] = 255
+        return kept
 
     @staticmethod
     def _remove_parking_floor_blobs(mask, width):
@@ -183,15 +203,13 @@ class LaneController:
             if area <= min_dash_area:
                 cleaned[labels == label] = 255
                 continue
-            if (
-                centroid_x < parking_x
-                and area > max_area * 0.25
-            ):
-                continue
-            if (
-                area > max_area
-                and aspect < cfg.MASK_FLOOR_BLOB_MAX_ASPECT
-            ):
+            if centroid_x < parking_x:
+                if (
+                    area > max_area * 0.25
+                    and aspect < cfg.MASK_FLOOR_BLOB_MAX_ASPECT
+                ):
+                    continue
+            elif area > max_area * 2.0 and aspect < 2.5:
                 continue
             cleaned[labels == label] = 255
         return cleaned

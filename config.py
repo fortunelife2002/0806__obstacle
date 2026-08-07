@@ -84,17 +84,17 @@ ROI_BOTTOM = 480
 # 흰색 차선은 밝고 채도가 낮아야 합니다. 밝기만 사용하면 초록 바닥도
 # 흰색으로 처리되므로 HSV 채도 조건을 반드시 함께 사용합니다.
 WHITE_THRESHOLD = 200
-LANE_WHITE_VALUE_MIN = 170
-LANE_WHITE_SATURATION_MAX = 65
-# 회색 바닥(주변과 밝기 차 작음)만 걸러내고, 희미한 점선은 남깁니다.
-LANE_LOCAL_CONTRAST_MIN = 10.0
+LANE_WHITE_VALUE_MIN = 155
+LANE_WHITE_SATURATION_MAX = 75
+# 회색 주차장 구역에만 국소 대비를 적용합니다(트랙 위 흰 선은 HSV만 사용).
+LANE_LOCAL_CONTRAST_MIN = 8.0
 LANE_LOCAL_BLUR_SIZE = 31
+LANE_MASK_PARKING_MAX_X = 100.0
 # 넓은 회색 덩어리 제거. 얇은 세로 선(점선/실선)은 aspect로 보호합니다.
 MASK_FLOOR_BLOB_MAX_AREA = 2800.0
 MASK_FLOOR_BLOB_MAX_ASPECT = 5.0
-LANE_MASK_PARKING_MAX_X = 130.0
-LANE_MASK_MIN_LINE_ASPECT = 3.5
-LANE_MASK_MIN_DASH_AREA = 40.0
+LANE_MASK_MIN_LINE_ASPECT = 3.0
+LANE_MASK_MIN_DASH_AREA = 25.0
 REFERENCE_WIDTH = 640.0
 
 # [2026-08-05] 박스형 표시(주차 테스트 칸 등) 오검출 필터. 실차 영상
