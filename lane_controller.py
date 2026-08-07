@@ -122,6 +122,9 @@ class LaneController:
         bottom = min(cfg.ROI_BOTTOM, frame.shape[0])
         top = min(cfg.ROI_TOP, bottom - 1)
         roi = frame[top:bottom, :]
+        width = roi.shape[1]
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
         saturation = hsv[:, :, 1]
         value = hsv[:, :, 2]
@@ -135,6 +138,13 @@ class LaneController:
             (value >= cfg.LANE_WHITE_VALUE_MIN)
             & (saturation <= cfg.LANE_WHITE_SATURATION_MAX)
         ).astype(np.uint8) * 255
+        blur_size = cfg.LANE_LOCAL_BLUR_SIZE | 1
+        local_mean = cv2.GaussianBlur(gray, (blur_size, blur_size), 0)
+        contrast = cv2.subtract(gray, local_mean)
+        white = cv2.bitwise_and(
+            white,
+            (contrast >= cfg.LANE_LOCAL_CONTRAST_MIN).astype(np.uint8) * 255,
+        )
         mask = cv2.morphologyEx(
             white,
             cv2.MORPH_CLOSE,
@@ -143,11 +153,48 @@ class LaneController:
         mask = cv2.morphologyEx(
             mask,
             cv2.MORPH_OPEN,
-            cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
+            cv2.getStructuringElement(cv2.MORPH_RECT, (1, 3)),
         )
         if cfg.BOX_FILTER_ENABLED:
             mask = LaneController._remove_box_structures(mask)
+        mask = LaneController._remove_parking_floor_blobs(mask, width)
         return roi, mask, cfg.LANE_WHITE_VALUE_MIN
+
+    @staticmethod
+    def _remove_parking_floor_blobs(mask, width):
+        """왼쪽 회색 주차장 등 넓은 바닥만 지우고, 점선·실선은 남깁니다."""
+        max_area = int(scale_x(cfg.MASK_FLOOR_BLOB_MAX_AREA, width))
+        parking_x = scale_x(cfg.LANE_MASK_PARKING_MAX_X, width)
+        min_dash_area = int(scale_x(cfg.LANE_MASK_MIN_DASH_AREA, width))
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+            mask, connectivity=8
+        )
+        cleaned = np.zeros_like(mask)
+        for label in range(1, num_labels):
+            area = int(stats[label, cv2.CC_STAT_AREA])
+            blob_w = int(stats[label, cv2.CC_STAT_WIDTH])
+            blob_h = int(stats[label, cv2.CC_STAT_HEIGHT])
+            aspect = max(blob_w, blob_h) / max(1, min(blob_w, blob_h))
+            centroid_x = float(centroids[label][0])
+
+            if aspect >= cfg.LANE_MASK_MIN_LINE_ASPECT:
+                cleaned[labels == label] = 255
+                continue
+            if area <= min_dash_area:
+                cleaned[labels == label] = 255
+                continue
+            if (
+                centroid_x < parking_x
+                and area > max_area * 0.25
+            ):
+                continue
+            if (
+                area > max_area
+                and aspect < cfg.MASK_FLOOR_BLOB_MAX_ASPECT
+            ):
+                continue
+            cleaned[labels == label] = 255
+        return cleaned
 
     @staticmethod
     def _clear_left_mask_band(mask, width, lane_offset_lanes=0.0):
