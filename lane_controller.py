@@ -148,7 +148,7 @@ class LaneController:
         mask = cv2.morphologyEx(
             white,
             cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(cv2.MORPH_RECT, (3, 9)),
+            cv2.getStructuringElement(cv2.MORPH_RECT, (1, 9)),
         )
         mask = cv2.morphologyEx(
             mask,
@@ -161,10 +161,22 @@ class LaneController:
         return roi, mask, cfg.LANE_WHITE_VALUE_MIN
 
     @staticmethod
+    def _clear_left_mask_band(mask, width, lane_offset_lanes=0.0):
+        """왼쪽 회색 주차장 영역을 마스크에서 강제로 제거합니다."""
+        if lane_offset_lanes != 0.0:
+            cutoff = int(scale_x(cfg.LANE_MASK_CLEAR_LEFT_MAX_X_AVOID, width))
+        else:
+            cutoff = int(scale_x(cfg.LANE_MASK_CLEAR_LEFT_MAX_X, width))
+        if cutoff > 0:
+            mask[:, :cutoff] = 0
+        return mask
+
+    @staticmethod
     def _remove_floor_blobs(mask, width):
         """가로로 넓은 회색 바닥 덩어리를 지우고 얇은 선만 남깁니다."""
         max_area = int(scale_x(cfg.MASK_FLOOR_BLOB_MAX_AREA, width))
-        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        left_band = width * cfg.LANE_MASK_LEFT_BAND_RATIO
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
             mask, connectivity=8
         )
         cleaned = np.zeros_like(mask)
@@ -172,7 +184,14 @@ class LaneController:
             area = int(stats[label, cv2.CC_STAT_AREA])
             blob_w = int(stats[label, cv2.CC_STAT_WIDTH])
             blob_h = int(stats[label, cv2.CC_STAT_HEIGHT])
+            blob_left = int(stats[label, cv2.CC_STAT_LEFT])
             aspect = max(blob_w, blob_h) / max(1, min(blob_w, blob_h))
+            centroid_x = float(centroids[label][0])
+            if (
+                area > max_area * 0.45
+                and (centroid_x < left_band or blob_left <= 2)
+            ):
+                continue
             if area <= max_area or aspect >= cfg.MASK_FLOOR_BLOB_MAX_ASPECT:
                 cleaned[labels == label] = 255
         return cleaned
@@ -1895,6 +1914,9 @@ class LaneController:
         offset_lane_width_px = 0.0
 
         roi, mask, threshold = self._make_mask(frame)
+        mask = self._clear_left_mask_band(
+            mask, mask.shape[1], self._lane_offset_lanes
+        )
         height, width = mask.shape
         single_side = None
         if cfg.CENTER_LINE_MODE:
@@ -1986,7 +2008,12 @@ class LaneController:
         else:
             self.lost_count += 1
             self.valid_streak = 0
-            if self.lost_count > cfg.MEMORY_FRAMES:
+            memory_limit = (
+                cfg.AVOID_MEMORY_FRAMES
+                if self._avoid_right_only_active()
+                else cfg.MEMORY_FRAMES
+            )
+            if self.lost_count > memory_limit:
                 self.path_locked = False
                 self.path_coefficients = None
                 self.single_lane_side = None
@@ -1996,21 +2023,26 @@ class LaneController:
                 if cfg.CENTER_LINE_MODE
                 and self.path_locked
                 and self.path_coefficients is not None
-                and self.lost_count <= cfg.MEMORY_FRAMES
+                and self.lost_count <= memory_limit
                 else "MEMORY"
                 if self.path_locked
                 and self.path_coefficients is not None
-                and self.lost_count <= cfg.MEMORY_FRAMES
+                and self.lost_count <= memory_limit
                 else "CENTER_LOST"
                 if cfg.CENTER_LINE_MODE
                 else "LOST"
             )
 
+        memory_limit = (
+            cfg.AVOID_MEMORY_FRAMES
+            if self._avoid_right_only_active()
+            else cfg.MEMORY_FRAMES
+        )
         usable_path = (
             self.path_locked
             and
             self.path_coefficients is not None
-            and self.lost_count <= cfg.MEMORY_FRAMES
+            and self.lost_count <= memory_limit
         )
         if usable_path:
             (

@@ -94,6 +94,14 @@ LANE_LOCAL_BLUR_SIZE = 31
 MASK_FLOOR_BLOB_MAX_AREA = 2800.0
 # 가로로 넓은 덩어리(종횡비 < 이 값)는 바닥으로 보고 제거합니다.
 MASK_FLOOR_BLOB_MAX_ASPECT = 6.0
+# 왼쪽 회색 주차장이 차선 마스크에 잡히지 않게 ROI 왼쪽을 지웁니다(640기준).
+LANE_MASK_CLEAR_LEFT_MAX_X = 175.0
+# 회피 중(OFS!=0)에는 오른쪽 실선만 쓰므로 더 넓게 지웁니다.
+LANE_MASK_CLEAR_LEFT_MAX_X_AVOID = 310.0
+# 연결요소 중심이 이 비율보다 왼쪽이고 면적이 크면 바닥 덩어리로 제거.
+LANE_MASK_LEFT_BAND_RATIO = 0.40
+# 회피 중 차선이 잠깐 안 보여도 MEMORY를 더 오래 유지합니다(프레임).
+AVOID_MEMORY_FRAMES = 90
 REFERENCE_WIDTH = 640.0
 
 # [2026-08-05] 박스형 표시(주차 테스트 칸 등) 오검출 필터. 실차 영상
