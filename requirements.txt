@@ -1,0 +1,16 @@
+# Python dependencies for the autonomous-driving (lane following + LiDAR
+# obstacle avoidance) project. Tested with Python 3.12.
+#
+# Notes:
+# - opencv-python provides the cv2 GUI functions (cv2.imshow / trackbars) used
+#   by main.py and the calibrate_* tools on the actual vehicle (Windows). On a
+#   headless machine cv2 still imports and all non-GUI image processing runs;
+#   only the window-display calls require a display. It also needs the system
+#   libraries libGL and libglib2.0 to import on Linux.
+# - pyserial is imported as `serial`; rplidar-roboticia is imported as `rplidar`.
+
+numpy==2.4.4
+opencv-python==5.0.0.93
+matplotlib==3.11.1
+pyserial==3.5
+rplidar-roboticia==0.9.5
