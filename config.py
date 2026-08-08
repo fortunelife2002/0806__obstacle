@@ -196,11 +196,12 @@ TRACK_MAX_FIT_RMSE = 22.0
 TRACK_MIN_COVERAGE = 0.42
 TRACK_MIN_CONFIDENCE = 0.55
 TRACK_START_CONFIRM_FRAMES = 3
-TRACK_PATH_FILTER = 0.65
-TRACK_MAX_NEAR_JUMP = 35.0
-TRACK_MAX_MIDDLE_JUMP = 50.0
-TRACK_MAX_PREVIEW_JUMP = 65.0
-TRACK_MAX_FAR_JUMP = 80.0
+# 경로 계수 블렌딩. 높을수록 프레임 간 조향 목표가 부드러워집니다.
+TRACK_PATH_FILTER = 0.76
+TRACK_MAX_NEAR_JUMP = 28.0
+TRACK_MAX_MIDDLE_JUMP = 42.0
+TRACK_MAX_PREVIEW_JUMP = 55.0
+TRACK_MAX_FAR_JUMP = 68.0
 TRACK_CUBIC_MIN_BOTH_POINTS = 6
 TRACK_CUBIC_MIN_BOTH_COVERAGE = 0.38
 TRACK_CUBIC_RMSE_RATIO = 0.76
@@ -339,9 +340,9 @@ PREVIEW_Y_RATIO = 0.34
 # 5.01->5.14(+2.6%)였다. 검출 쪽 위험은 낮다.
 # 판정: 진동 진폭이 줄면 성공. 커브에서 안쪽을 미리 파고들거나(코너
 #   컷) 반응이 굼떠지면 과한 것이므로 0.14/0.10/0.24 정도로 낮출 것.
-PREVIEW_TRACKING_WEIGHT = 0.10
-PREVIEW_SPEED_GAIN = 0.16
-PREVIEW_MAX_WEIGHT = 0.36
+PREVIEW_TRACKING_WEIGHT = 0.08
+PREVIEW_SPEED_GAIN = 0.10
+PREVIEW_MAX_WEIGHT = 0.28
 PREVIEW_SINGLE_WEIGHT = 0.15
 PREVIEW_SINGLE_MIN_POINTS = 7
 PREVIEW_SINGLE_MIN_COVERAGE = 0.45
@@ -349,17 +350,17 @@ PREVIEW_ERROR_LIMIT = 180.0
 PREVIEW_SINGLE_RAMP_FRAMES = 3
 HEADING_CONTROL_GAIN = 0.02
 SIGNED_CURVATURE_GAIN = 0.01
-CURVE_OUTSIDE_HEADING_GAIN = 0.05
-CURVE_OUTSIDE_CURVATURE_GAIN = 0.03
-CURVE_OUTSIDE_MAX = 14.0
-CURVE_OUTSIDE_FILTER = 0.82
-CURVE_OUTSIDE_SPEED_GAIN = 0.35
+CURVE_OUTSIDE_HEADING_GAIN = 0.04
+CURVE_OUTSIDE_CURVATURE_GAIN = 0.02
+CURVE_OUTSIDE_MAX = 12.0
+CURVE_OUTSIDE_FILTER = 0.88
+CURVE_OUTSIDE_SPEED_GAIN = 0.25
 CONTROL_ERROR_LIMIT = 150.0
 # 왼쪽으로 꺾이는 구간에서는 중앙 추정만 사용하지 않고 실제 왼쪽 점선에서
 # 복원한 차로 중앙을 함께 사용합니다. 점선 공백은 짧게만 기억합니다.
 LEFT_ANCHOR_CURVE_TRIGGER = 8.0
-LEFT_ANCHOR_BLEND = 0.75
-LEFT_ANCHOR_FILTER = 0.70
+LEFT_ANCHOR_BLEND = 0.55
+LEFT_ANCHOR_FILTER = 0.84
 LEFT_ANCHOR_MEMORY_FRAMES = 6
 LEFT_ANCHOR_ERROR_LIMIT = 80.0
 LATERAL_SAFETY_START_RATIO = 0.08
@@ -386,27 +387,20 @@ LATERAL_SAFETY_MAX = 10.0
 # 보정력을 다 쓸 수 있게 여유폭을 15px -> 60px로 넓혔습니다. 목표는
 # '평소엔 guard만으로 복귀, hard는 S자처럼 정말 급할 때만 발동'입니다.
 # 실차에서 재검증 필요.
-RIGHT_SAFE_CLEARANCE_RATIO = 0.60          # 0.48 -> 0.60 (guard를 더 일찍 시작)
-RIGHT_SAFE_CLEARANCE_MIN = 230.0           # 185.0 -> 230.0
-RIGHT_GUARD_DEADBAND = 3.0
-# [2026-08-06 01:xx Claude 수정] 1.30 -> 0.79. soft(230)~hard(170) 여유폭
-# 60px 전체를 0->45로 매끄럽게 채우려면 gain=45/(60-3)≈0.79가 필요한데,
-# 1.30이면 여유폭이 63% 남은 시점(clearance=192.4)에서 이미 45로
-# 포화돼 그 뒤로는 실제 여유와 무관하게 45 고정 출력(on/off 릴레이)이
-# 된다. 실차 로그(20260806-0312-19, 8초 부근)에서 guard=45 고정 +
-# error가 -150~+42 왕복하는 패턴으로 재확인. 8/5에 이미 계산/설명했으나
-# 실제 파일에는 반영이 안 돼 있었다.
-RIGHT_GUARD_GAIN = 0.79                    # 1.30 -> 0.79
-RIGHT_GUARD_MAX = 45.0                     # 40.0 -> 45.0
+RIGHT_SAFE_CLEARANCE_RATIO = 0.54
+RIGHT_SAFE_CLEARANCE_MIN = 210.0
+RIGHT_GUARD_DEADBAND = 5.0
+RIGHT_GUARD_GAIN = 0.55
+RIGHT_GUARD_MAX = 38.0
 BOUNDARY_GUARD_MAX_Y_GAP_RATIO = 0.20
 BOUNDARY_HARD_CLEARANCE_RATIO = 0.44       # 그대로 (S자 대응력 보존)
 BOUNDARY_HARD_CLEARANCE_MIN = 170.0        # 그대로
-BOUNDARY_STEER_GAIN = 0.22
-BOUNDARY_STEER_MAX = 10.0
-BOUNDARY_STEER_FILTER = 0.84
-BOUNDARY_HARD_STEER_OFFSET = 12.0          # 그대로 (S자 대응력 보존)
-BOUNDARY_HARD_STEER_RATE = 130.0           # 그대로
-BOUNDARY_HARD_CONFIRM_FRAMES = 2
+BOUNDARY_STEER_GAIN = 0.16
+BOUNDARY_STEER_MAX = 8.0
+BOUNDARY_STEER_FILTER = 0.90
+BOUNDARY_HARD_STEER_OFFSET = 10.0
+BOUNDARY_HARD_STEER_RATE = 95.0
+BOUNDARY_HARD_CONFIRM_FRAMES = 3
 INFERRED_BOUNDARY_GUARD_SCALE = 0.50
 # [2026-08-06 Claude 추가] 경계 근처에서 preview(전방주시) 비중을 줄일 때의
 # 하한. 예전엔 하한이 0이라 hard_boundary가 켜지는 순간 preview_weight가
@@ -418,25 +412,22 @@ INFERRED_BOUNDARY_GUARD_SCALE = 0.50
 #   preview가 과하게 살아난 것이므로 0.3 정도로 낮출 것.
 BOUNDARY_PREVIEW_MIN_SCALE = 0.5
 
-# 조향 안정화 설정
-ERROR_FILTER = 0.68
-DERIVATIVE_FILTER = 0.82
+# -------------------------------------------------------------------
+# 조향 안정화 (기본 주행 진동 억제)
+# -------------------------------------------------------------------
+# ERROR_FILTER/DERIVATIVE_FILTER: 높을수록 오차·변화율이 더 부드럽게 전달됩니다.
+# STEER_KP 낮추고 STEER_KD·DEADBAND·RATE를 올리면 좌우 지그재그가 줄어듭니다.
+# 커브에서 반응이 둔해지면 KP를 0.01~0.02 올리거나 RATE를 5~10 내리세요.
+ERROR_FILTER = 0.78
+DERIVATIVE_FILTER = 0.88
 STEER_RIGHT = 100
 STEER_LEFT = 210
-STEER_KP = 0.17
-# [2026-08-06 Claude 수정] 0.004 -> 0.015. 실차 로그(20260806-0339-30,
-# 34~40초, 4초 주기로 error가 -91~+76 왕복)에서 그 진동의 실제 변화율
-# (~85px/s)로 계산하면 미분항 기여가 85*0.004=0.34 PWM으로 사실상 0.
-# 미분항이 이름만 있고 실제로는 진동 억제에 전혀 기여를 못 하고 있었다.
-# 한 번에 목표치(0.06~0.12 추정)까지 올리면 잡음 증폭 위험이 커서
-# 4배 정도(0.015)만 먼저 올려 방향을 본다.
-# 판정: 진폭/주기가 줄면 성공. 새로운 고주파 떨림이 생기면 과도한
-# 것이니 0.008~0.010 사이로 낮출 것.c
-STEER_KD = 0.06
-STEER_DEADBAND = 4.0
-STEER_RATE_PER_SECOND = 95.0
-HIGH_SPEED_STEER_RATE_REDUCTION = 0.20
-MEMORY_STEER_RETAIN_RATIO = 0.45
+STEER_KP = 0.13
+STEER_KD = 0.09
+STEER_DEADBAND = 7.0
+STEER_RATE_PER_SECOND = 72.0
+HIGH_SPEED_STEER_RATE_REDUCTION = 0.32
+MEMORY_STEER_RETAIN_RATIO = 0.55
 
 # S자에서는 정확도를 우선해 직선보다 자동으로 감속합니다.
 BASE_SPEED = 180
