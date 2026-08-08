@@ -86,19 +86,11 @@ ROI_BOTTOM = 480
 WHITE_THRESHOLD = 200
 LANE_WHITE_VALUE_MIN = 135
 LANE_WHITE_SATURATION_MAX = 85
-# 왼쪽 주차장(x<LANE_MASK_PARKING_MAX_X)만 국소 대비로 회색 바닥 제거.
-LANE_MASK_PARKING_CONTRAST_MIN = 10.0
-# 트랙 구역은 HSV 또는 낮은 국소 대비(회색 트랙 위 흰 테이프)로 잡습니다.
+# 전체 ROI에 HSV 또는 국소 대비(회색 트랙 위 흰 테이프)를 적용합니다.
 LANE_TRACK_CONTRAST_MIN = 5.0
 LANE_LOCAL_BLUR_SIZE = 31
-LANE_MASK_PARKING_MAX_X = 90.0
 LANE_MASK_MIN_LINE_ASPECT = 2.2
 LANE_MASK_MIN_DASH_AREA = 18.0
-# 1차선 회피 시 왼쪽 외곽 실선 보강 구간(px, 640기준). 회색 트랙에서
-# V<LANE_WHITE_VALUE_MIN인 희미한 실선도 마스크에 남기기 위해 씁니다.
-LANE_MASK_LEFT_TRACK_MAX_X = 280.0
-LANE_LEFT_VALUE_MIN_AVOID = 118.0
-LANE_LEFT_TRACK_CONTRAST_MIN = 3.0
 REFERENCE_WIDTH = 640.0
 
 # [2026-08-05] 박스형 표시(주차 테스트 칸 등) 오검출 필터. 실차 영상
@@ -193,13 +185,6 @@ TRACK_RIGHT_LOCKED_MIN_OFFSET_RATIO = -0.05
 TRACK_RIGHT_LOCKED_SEARCH_WIDTH_RATIO = 0.55
 TRACK_RIGHT_SEARCH_MARGIN = 70.0
 TRACK_RIGHT_GAP_GROWTH = 45.0
-# 1차선 회피 시 왼쪽 외곽 실선을 고정 추적할 때 쓰는 탐색 한계(px, 640기준).
-TRACK_LEFT_MAX_X = 400.0
-TRACK_LEFT_MAX_OFFSET_RATIO = 0.20
-TRACK_LEFT_LOCKED_MAX_OFFSET_RATIO = -0.05
-TRACK_LEFT_LOCKED_SEARCH_WIDTH_RATIO = 0.55
-TRACK_LEFT_SEARCH_MARGIN = 70.0
-TRACK_LEFT_GAP_GROWTH = 45.0
 TRACK_SEARCH_MARGIN = 70.0
 TRACK_MIN_POINTS = 6
 TRACK_POLY_DEGREE = 3
@@ -264,10 +249,15 @@ LEFT_BOUNDARY_MAX_SEGMENT_WIDTH = 30.0
 # 단, 1차선(왼쪽) 회피 시에는 왼쪽 실선이 기준이므로 lane_controller가
 # AVOID_LEFT_PRIMARY_TRACKING으로 오른쪽 전용 모드를 끕니다.
 AVOID_RIGHT_ONLY_TRACKING = True
-# 1차선 회피 중 왼쪽 외곽 실선을 기준으로 추적합니다(오른쪽은 점선).
+# 1차선 회피 중 중앙 점선 왼쪽에서 가장 오른쪽 실선을 왼쪽 차선으로 씁니다.
 AVOID_LEFT_PRIMARY_TRACKING = True
-# 회피 중(OFS!=0)에만 왼쪽 ROI를 지울 때 쓰는 폭(px, 640기준).
-LANE_MASK_CLEAR_LEFT_MAX_X_AVOID = 310.0
+# 중앙 점선과 왼쪽 실선 사이 최소 간격(px, 640기준).
+LANE_ONE_CENTER_MARGIN = 12.0
+# 1차선 중앙 점선 후보 최소 x 비율(이보다 오른쪽 얇은 선만 점선으로 봄).
+LANE_ONE_CENTER_MIN_X_RATIO = 0.32
+# 1차선 왼쪽 실선 후보 세그먼트 폭(px, 640기준). 점선보다 넓은 실선만 고릅니다.
+LANE_ONE_SOLID_MIN_SEGMENT_WIDTH = 4.0
+LANE_ONE_SOLID_MAX_SEGMENT_WIDTH = 45.0
 # 회피 중 차선이 잠깐 안 보여도 MEMORY를 더 오래 유지합니다(프레임).
 AVOID_MEMORY_FRAMES = 90
 

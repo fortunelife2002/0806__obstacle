@@ -41,14 +41,12 @@ def corridor_hit(distance_mm, angle_deg=0.0, offset_lanes=0.0):
 def make_synthetic_track_frame(width=640, height=480):
     """회색 바닥 + 흰 차선(오른쪽 실선, 왼쪽 점선 조각) 합성 영상."""
     frame = np.full((height, width, 3), (145, 145, 145), dtype=np.uint8)
-    # 회색 바닥에 약한 밝기 변화(오인식 유발)
     noise = np.random.default_rng(0).integers(-12, 12, (height, width), dtype=np.int16)
     gray = np.clip(155 + noise, 0, 255).astype(np.uint8)
     frame[:, :, 0] = gray
     frame[:, :, 1] = gray
     frame[:, :, 2] = gray
 
-    # 오른쪽 실선 + 왼쪽 점선 조각
     for y in range(height):
         x_right = int(420 + (y - height) * 0.08)
         x_left = int(180 + (y - height) * 0.05)
@@ -62,59 +60,24 @@ def make_synthetic_track_frame(width=640, height=480):
     return frame
 
 
-def make_lane1_faint_left_frame(width=640, height=480, left_value=128):
-    """1차선 시점: 희미한 왼쪽 실선(V<135) + 밝은 오른쪽 점선."""
+def make_lane1_with_parking(width=640, height=480):
+    """1차선: 주차장 선(왼쪽) + 외곽 실선 + 중앙 점선."""
     frame = np.full((height, width, 3), 118, dtype=np.uint8)
     for y in range(height):
-        x_left = int(75 + (y - height) * 0.04)
-        x_right = int(420 + (y - height) * 0.08)
+        x_parking = int(35 + (y - height) * 0.01)
+        x_left = int(130 + (y - height) * 0.04)
+        x_center = int(360 + (y - height) * 0.07)
         for dx in range(-2, 3):
+            xp = x_parking + dx
             xl = x_left + dx
-            xr = x_right + dx
+            xc = x_center + dx
+            if 0 <= xp < width:
+                frame[y, xp] = (240, 240, 240)
             if 0 <= xl < width:
-                value = left_value
-                frame[y, xl] = (value, value, value)
-            if 0 <= xr < width:
-                frame[y, xr] = (250, 250, 250)
+                frame[y, xl] = (245, 245, 245)
+            if 0 <= xc < width and (y // 24) % 2 == 0:
+                frame[y, xc] = (250, 250, 250)
     return frame
-
-
-def simulate_lane1_left_mask():
-    """1차선 회피 시 희미한 왼쪽 실선이 마스크·추적에 잡히는지 검증."""
-    frame = make_lane1_faint_left_frame(left_value=128)
-    lc = LaneController()
-    lc.set_lane_offset(cfg.AVOID_LANE_OFFSET_LANES)
-
-    roi, mask, _ = LaneController._make_mask(frame)
-    left_before = np.count_nonzero(mask[:, : mask.shape[1] // 3])
-    mask = LaneController._enhance_left_lane_mask(roi, mask, mask.shape[1])
-    left_after = np.count_nonzero(mask[:, : mask.shape[1] // 3])
-
-    rows = np.linspace(
-        mask.shape[0] * cfg.TRACK_TOP_RATIO,
-        mask.shape[0] * cfg.TRACK_BOTTOM_RATIO,
-        cfg.TRACK_ROW_COUNT,
-    )
-    left_track = lc._track_left_boundary(mask, rows)
-
-    for _ in range(cfg.TRACK_START_CONFIRM_FRAMES):
-        result = lc.update(frame)
-
-    print("\n=== 1차선 왼쪽 실선 시뮬레이션 ===")
-    print(f"왼쪽 마스크 보강 전/후: {left_before} -> {left_after} px")
-    print(f"왼쪽 경계 추적 포인트: {len(left_track)}")
-    print(
-        f"left_primary={lc._avoid_left_primary_active()} "
-        f"status={result.get('status')} "
-        f"conf={result.get('confidence', 0):.2f}"
-    )
-
-    ok = (
-        left_after > 0
-        and len(left_track) >= cfg.SINGLE_LANE_MIN_POINTS
-        and result.get("status") not in ("LOST", "SINGLE_RIGHT")
-    )
-    return ok
 
 
 def simulate_mask():
@@ -137,6 +100,44 @@ def simulate_mask():
     return white_ratio < 0.25
 
 
+def simulate_lane1_left_mask():
+    """1차선: 중앙 점선 왼쪽에서 가장 오른쪽 실선을 왼쪽 차선으로 잡는지 검증."""
+    frame = make_lane1_with_parking()
+    lc = LaneController()
+    lc.set_lane_offset(cfg.AVOID_LANE_OFFSET_LANES)
+
+    roi, mask, _ = LaneController._make_mask(frame)
+    height, width = mask.shape
+    rows = np.linspace(
+        height * cfg.TRACK_TOP_RATIO,
+        height * cfg.TRACK_BOTTOM_RATIO,
+        cfg.TRACK_ROW_COUNT,
+    )
+    center_rows = lc._track_lane_one_center_rows(mask, rows, height, width)
+    left_track = lc._track_lane_one_left_boundary(center_rows, width)
+    picked_left_x = int(np.median([item["left"] for item in left_track])) if left_track else -1
+
+    for _ in range(cfg.TRACK_START_CONFIRM_FRAMES):
+        result = lc.update(frame)
+
+    print("\n=== 1차선 왼쪽 실선 시뮬레이션 ===")
+    print(f"중앙 점선 추적 행: {len(center_rows)}")
+    print(f"왼쪽 실선 추적 행: {len(left_track)}")
+    print(f"선택된 왼쪽 x(중앙값): {picked_left_x} (주차장~35, 외곽실선~130)")
+    print(
+        f"left_primary={lc._avoid_left_primary_active()} "
+        f"status={result.get('status')} "
+        f"conf={result.get('confidence', 0):.2f}"
+    )
+
+    ok = (
+        len(left_track) >= cfg.SINGLE_LANE_MIN_POINTS
+        and picked_left_x > 90
+        and result.get("status") not in ("LOST", "SINGLE_RIGHT")
+    )
+    return ok
+
+
 def simulate_lidar_distances():
     print("\n=== 라이다 거리 시뮬레이션 ===")
     print(
@@ -147,11 +148,6 @@ def simulate_lidar_distances():
         f"감지 구간(트랙): {cfg.LIDAR_OBSTACLE_TRACK_MIN_CM:.0f}~"
         f"{cfg.LIDAR_OBSTACLE_TRACK_MAX_CM:.0f}cm"
     )
-
-    lateral_center = (
-        cfg.LIDAR_OBSTACLE_LATERAL_MIN_MM
-        + cfg.LIDAR_OBSTACLE_LATERAL_MAX_MM
-    ) * 0.5
 
     ok_150 = False
     ok_50 = False
@@ -169,7 +165,6 @@ def simulate_lidar_distances():
         else:
             ok_50 = hit
 
-    # 중앙 lateral에서 약간 벗어난 경우(각도 오차 시뮬)
     angle_err_deg = 2.0
     hit, debug = corridor_hit(1500.0, angle_deg=2.0)
     print(

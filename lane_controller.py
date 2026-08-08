@@ -157,23 +157,10 @@ class LaneController:
         blur_size = cfg.LANE_LOCAL_BLUR_SIZE | 1
         local_mean = cv2.GaussianBlur(gray, (blur_size, blur_size), 0)
         contrast = cv2.subtract(gray, local_mean)
-        parking_cutoff = int(scale_x(cfg.LANE_MASK_PARKING_MAX_X, width))
-        if parking_cutoff > 0:
-            parking_contrast = (
-                contrast >= cfg.LANE_MASK_PARKING_CONTRAST_MIN
-            ).astype(np.uint8) * 255
-            track_contrast = (
-                contrast >= cfg.LANE_TRACK_CONTRAST_MIN
-            ).astype(np.uint8) * 255
-            left = cv2.bitwise_and(
-                white[:, :parking_cutoff],
-                parking_contrast[:, :parking_cutoff],
-            )
-            track = cv2.bitwise_or(
-                white[:, parking_cutoff:],
-                track_contrast[:, parking_cutoff:],
-            )
-            white = np.hstack([left, track])
+        track_contrast = (
+            contrast >= cfg.LANE_TRACK_CONTRAST_MIN
+        ).astype(np.uint8) * 255
+        white = cv2.bitwise_or(white, track_contrast)
         mask = cv2.morphologyEx(
             white,
             cv2.MORPH_CLOSE,
@@ -205,56 +192,6 @@ class LaneController:
     @staticmethod
     def _remove_parking_floor_blobs(mask, width):
         """바닥 덩어리 제거는 비활성(차선까지 지우는 부작용). 호환용 stub."""
-        return mask
-
-    @staticmethod
-    def _enhance_left_lane_mask(roi, mask, width):
-        """1차선 회피 시 희미한 왼쪽 외곽 실선이 마스크에 남도록 보강합니다."""
-        cutoff = int(scale_x(cfg.LANE_MASK_LEFT_TRACK_MAX_X, width))
-        if cutoff <= 0:
-            return mask
-
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        saturation = hsv[:, :, 1]
-        value = hsv[:, :, 2]
-        blur_size = cfg.LANE_LOCAL_BLUR_SIZE | 1
-        local_mean = cv2.GaussianBlur(gray, (blur_size, blur_size), 0)
-        contrast = cv2.subtract(gray, local_mean)
-
-        left_value = value[:, :cutoff]
-        left_sat = saturation[:, :cutoff]
-        left_contrast = contrast[:, :cutoff]
-        bright = (
-            (left_value >= cfg.LANE_LEFT_VALUE_MIN_AVOID)
-            & (left_sat <= cfg.LANE_WHITE_SATURATION_MAX)
-            & (left_contrast >= cfg.LANE_LEFT_TRACK_CONTRAST_MIN)
-        ).astype(np.uint8) * 255
-        edge = (
-            left_contrast >= cfg.LANE_LEFT_TRACK_CONTRAST_MIN
-        ).astype(np.uint8) * 255
-        boosted = cv2.bitwise_or(bright, edge)
-        boosted = cv2.morphologyEx(
-            boosted,
-            cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(cv2.MORPH_RECT, (3, 9)),
-        )
-        markers = LaneController._extract_lane_markers(boosted, width)
-        mask[:, :cutoff] = cv2.bitwise_or(mask[:, :cutoff], markers[:, :cutoff])
-        return mask
-
-    @staticmethod
-    def _clear_left_mask_band(mask, width, lane_offset_lanes=0.0):
-        """회피 중에만 왼쪽 주차장 영역을 마스크에서 제거합니다."""
-        if lane_offset_lanes == 0.0:
-            return mask
-        # 1차선 회피 시 왼쪽 외곽 실선이 필요하므로 지우지 않습니다.
-        if cfg.AVOID_LANE_DIRECTION > 0:
-            return mask
-        cutoff = int(scale_x(cfg.LANE_MASK_CLEAR_LEFT_MAX_X_AVOID, width))
-        if cutoff > 0:
-            mask[:, :cutoff] = 0
         return mask
 
     @staticmethod
@@ -895,50 +832,117 @@ class LaneController:
 
         return sorted(tracked, key=lambda item: item["y"])
 
-    def _track_left_boundary(self, mask, rows):
-        """아래에서 위로 이어지는 왼쪽 외곽 실선을 먼저 고정 추적합니다."""
-        height, width = mask.shape
-        maximum_x = scale_x(cfg.TRACK_LEFT_MAX_X, width)
+    @staticmethod
+    def _is_lane_line_segment(segment, width):
+        """너무 넓은 바닥 덩어리를 제외한 차선 세그먼트인지 확인합니다."""
+        min_width = max(
+            cfg.TRACK_MIN_SEGMENT_WIDTH,
+            scale_x(cfg.LANE_ONE_SOLID_MIN_SEGMENT_WIDTH, width),
+        )
+        max_width = scale_x(cfg.LANE_ONE_SOLID_MAX_SEGMENT_WIDTH, width)
+        return min_width <= segment["width"] <= max_width
+
+    def _pick_rightmost_solid_left_of_center(
+        self, segments, center_x, width
+    ):
+        """중앙 점선 왼쪽에서 가장 오른쪽 실선(차선)을 고릅니다."""
+        margin = scale_x(cfg.LANE_ONE_CENTER_MARGIN, width)
+        left_limit = center_x - margin
+        candidates = [
+            segment for segment in segments
+            if segment["x"] < left_limit
+            and self._is_lane_line_segment(segment, width)
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda segment: segment["x"])
+
+    def _track_lane_one_center_rows(self, mask, rows, height, width):
+        """1차선 회피 시 중앙 점선 위치를 행마다 추적합니다."""
+        max_dash_width = scale_x(cfg.CENTER_LINE_MAX_SEGMENT_WIDTH, width)
+        center_min_x = width * cfg.LANE_ONE_CENTER_MIN_X_RATIO
+        default_x = scale_x(cfg.CENTER_LINE_TARGET_X, width)
         tracked = []
         missing_rows = 0
 
         for y in sorted(rows, reverse=True):
             segments = self._row_segments(mask, y)
-            y_ratio = float(y / max(1, height))
-            default_center, default_width = self._default_boundaries(
-                y_ratio, width
-            )
-            predicted_center = self._previous_center(
-                y, height, default_center
-            )
-            if self.width_coefficients is None:
-                predicted_width = default_width
-            else:
-                predicted_width = clamp(
-                    float(np.polyval(
-                        self.width_coefficients, y_ratio
-                    )) * width,
-                    scale_x(cfg.TRACK_MIN_LANE_WIDTH, width),
-                    min(
-                        scale_x(cfg.TRACK_MAX_LANE_WIDTH, width),
-                        width * 0.985,
-                    ),
-                )
-            offset_ratio = (
-                cfg.TRACK_LEFT_LOCKED_MAX_OFFSET_RATIO
-                if self.path_locked
-                else cfg.TRACK_LEFT_MAX_OFFSET_RATIO
-            )
-            side_maximum = predicted_center - predicted_width * offset_ratio
-            candidates = [
+            dashed = [
                 item for item in segments
-                if item["x"] <= min(maximum_x, side_maximum)
+                if item["width"] <= max_dash_width
             ]
-            if not candidates:
+            center_candidates = [
+                item for item in dashed
+                if item["x"] >= center_min_x
+            ]
+            if not tracked and not center_candidates:
+                continue
+
+            if center_candidates:
+                predicted = self._previous_center(y, height, default_x)
+                if tracked:
+                    previous = tracked[-1]
+                    predicted = previous["center_x"]
+                    if len(tracked) >= 2:
+                        older = tracked[-2]
+                        dy = previous["y"] - older["y"]
+                        if abs(dy) > 1.0:
+                            slope = (
+                                previous["center_x"] - older["center_x"]
+                            ) / dy
+                            predicted += slope * (y - previous["y"])
+                margin = scale_x(
+                    cfg.CENTER_LINE_SEARCH_MARGIN
+                    + min(missing_rows, 3) * cfg.CENTER_LINE_GAP_GROWTH,
+                    width,
+                )
+                usable = [
+                    item for item in center_candidates
+                    if abs(item["x"] - predicted) <= margin
+                ]
+                if not usable:
+                    usable = center_candidates
+                selected = max(
+                    usable,
+                    key=lambda item: item["x"],
+                )
+            elif tracked:
+                previous = tracked[-1]
+                predicted = previous["center_x"]
+                if len(tracked) >= 2:
+                    older = tracked[-2]
+                    dy = previous["y"] - older["y"]
+                    if abs(dy) > 1.0:
+                        slope = (
+                            previous["center_x"] - older["center_x"]
+                        ) / dy
+                        predicted += slope * (y - previous["y"])
+                selected = {"x": predicted}
+            else:
+                continue
+
+            tracked.append({
+                "y": float(y),
+                "center_x": selected["x"],
+                "segments": segments,
+            })
+            missing_rows = 0
+
+        return sorted(tracked, key=lambda item: item["y"])
+
+    def _track_lane_one_left_boundary(self, center_rows, width):
+        """중앙 점선 왼쪽에서 가장 오른쪽 실선을 행마다 고릅니다."""
+        tracked = []
+        missing_rows = 0
+
+        for row in sorted(center_rows, key=lambda item: item["y"], reverse=True):
+            selected = self._pick_rightmost_solid_left_of_center(
+                row["segments"], row["center_x"], width
+            )
+            if selected is None:
                 missing_rows += 1
                 continue
 
-            predicted = predicted_center - predicted_width * 0.5
             if tracked:
                 previous = tracked[-1]
                 predicted = previous["left"]
@@ -946,41 +950,22 @@ class LaneController:
                     older = tracked[-2]
                     dy = previous["y"] - older["y"]
                     if abs(dy) > 1.0:
-                        slope = (
-                            previous["left"] - older["left"]
-                        ) / dy
-                        predicted += slope * (y - previous["y"])
-
-            margin = scale_x(
-                cfg.TRACK_LEFT_SEARCH_MARGIN
-                + min(missing_rows, 2) * cfg.TRACK_LEFT_GAP_GROWTH,
-                width,
-            )
-            if not tracked and self.path_locked:
-                margin = max(
-                    margin,
-                    predicted_width * cfg.TRACK_LEFT_LOCKED_SEARCH_WIDTH_RATIO,
+                        slope = (previous["left"] - older["left"]) / dy
+                        predicted += slope * (row["y"] - previous["y"])
+                margin = scale_x(
+                    cfg.TRACK_SEARCH_MARGIN
+                    + min(missing_rows, 2) * cfg.TRACK_RIGHT_GAP_GROWTH,
+                    width,
                 )
-            usable = [
-                item for item in candidates
-                if abs(item["x"] - predicted) <= margin
-            ]
-            if not usable:
-                missing_rows += 1
-                continue
+                if abs(selected["x"] - predicted) > margin:
+                    missing_rows += 1
+                    continue
 
-            selected = min(
-                usable,
-                key=lambda item: (
-                    abs(item["x"] - predicted)
-                    - min(item["strength"], 600.0) * 0.006
-                ),
-            )
             tracked.append({
-                "y": float(y),
+                "y": row["y"],
                 "left": selected["x"],
-                "left_segment": selected,
-                "segments": segments,
+                "center_x": row["center_x"],
+                "segments": row["segments"],
             })
             missing_rows = 0
 
@@ -1177,223 +1162,40 @@ class LaneController:
         )
         return model, reliable
 
-    def _fit_width_model_left(self, left_track, height, width):
-        """왼쪽 실선 기준으로 오른쪽 점선과 짝지어 원근 차선 폭을 학습합니다."""
-        minimum_width = scale_x(cfg.TRACK_MIN_LANE_WIDTH, width)
-        maximum_width = min(
-            scale_x(cfg.TRACK_MAX_LANE_WIDTH, width),
-            width * 0.985,
-        )
-        max_right_segment_width = scale_x(
-            cfg.LEFT_BOUNDARY_MAX_SEGMENT_WIDTH, width
-        )
-        rows = []
-
-        for item in left_track:
-            candidates = []
-            for segment in item["segments"]:
-                if segment["width"] > max_right_segment_width:
-                    continue
-                if segment["x"] <= item["left"]:
-                    continue
-                lane_width = segment["x"] - item["left"]
-                if not minimum_width <= lane_width <= maximum_width:
-                    continue
-                candidate = {
-                    "y_ratio": item["y"] / max(1.0, float(height)),
-                    "width_ratio": lane_width / max(1.0, float(width)),
-                    "right": segment["x"],
-                    "lane_width": lane_width,
-                    "strength": segment["strength"],
-                }
-                candidates.append(candidate)
-            if candidates:
-                rows.append({
-                    "y_ratio": item["y"] / max(1.0, float(height)),
-                    "candidates": candidates,
-                })
-
-        default_model = self._default_width_model(width)
-        selected = []
-        local_model = None
-
-        for row in rows:
-            default_width = float(np.polyval(
-                default_model, row["y_ratio"]
-            )) * width
-            if not selected:
-                predicted = default_width
-                tolerance = max(
-                    scale_x(cfg.TRACK_WIDTH_SEED_TOLERANCE, width),
-                    default_width * 0.80,
-                )
-            elif len(selected) == 1:
-                first = selected[0]
-                first_default = float(np.polyval(
-                    default_model, first["y_ratio"]
-                )) * width
-                predicted = first["lane_width"] * (
-                    default_width / max(1.0, first_default)
-                )
-                tolerance = max(
-                    scale_x(cfg.TRACK_WIDTH_SECOND_TOLERANCE, width),
-                    predicted * 0.18,
-                )
-            else:
-                predicted = float(np.polyval(
-                    local_model, row["y_ratio"]
-                )) * width
-                tolerance = self._width_tolerance(predicted, width)
-
-            if not minimum_width <= predicted <= maximum_width:
-                continue
-            candidate = min(
-                row["candidates"],
-                key=lambda value: abs(value["lane_width"] - predicted),
-            )
-            if abs(candidate["lane_width"] - predicted) > tolerance:
-                continue
-            selected.append(candidate)
-
-            if len(selected) >= 2:
-                y_values = np.asarray([
-                    value["y_ratio"] for value in selected
-                ])
-                width_values = np.asarray([
-                    value["width_ratio"] for value in selected
-                ])
-                strengths = np.asarray([
-                    min(value["strength"], 500.0)
-                    for value in selected
-                ])
-                candidate_model = np.polyfit(
-                    y_values, width_values, 1, w=strengths
-                )
-                if (
-                    cfg.TRACK_WIDTH_MODEL_MIN_SLOPE
-                    <= candidate_model[0]
-                    <= cfg.TRACK_WIDTH_MODEL_MAX_SLOPE
-                ):
-                    local_model = candidate_model
-                else:
-                    selected.pop()
-
-        reliable = len(selected) >= cfg.TRACK_WIDTH_MIN_PAIR_ROWS
-        if reliable:
-            coverage = (
-                max(value["y_ratio"] for value in selected)
-                - min(value["y_ratio"] for value in selected)
-            )
-            reliable = coverage >= cfg.TRACK_WIDTH_MIN_PAIR_COVERAGE
-        if reliable:
-            y_values = np.asarray([
-                value["y_ratio"] for value in selected
-            ])
-            width_values = np.asarray([
-                value["width_ratio"] for value in selected
-            ])
-            strengths = np.asarray([
-                min(value["strength"], 500.0)
-                for value in selected
-            ])
-            model = np.polyfit(y_values, width_values, 1, w=strengths)
-            reliable = self._width_model_is_valid(model, width)
-            if reliable:
-                if self.width_coefficients is None:
-                    self.width_coefficients = model
-                else:
-                    alpha = cfg.TRACK_WIDTH_FILTER
-                    self.width_coefficients = (
-                        alpha * self.width_coefficients
-                        + (1.0 - alpha) * model
-                    )
-                self.width_model_age = 0
-
-        if not reliable:
-            self.width_model_age = min(
-                self.width_model_age + 1,
-                cfg.SINGLE_LANE_WIDTH_MAX_AGE + 1,
-            )
-
-        model = (
-            self.width_coefficients
-            if self.width_coefficients is not None
-            else default_model
-        )
-        return model, reliable
-
-    def _collect_left_primary_measurements(self, mask):
-        """1차선 회피 시 왼쪽 실선과 점선/학습 폭으로 중앙점을 복원합니다."""
+    def _collect_lane_one_measurements(self, mask):
+        """1차선 회피: 중앙 점선 왼쪽에서 가장 오른쪽 실선으로 중앙을 복원합니다."""
         height, width = mask.shape
         rows = np.linspace(
             height * cfg.TRACK_TOP_RATIO,
             height * cfg.TRACK_BOTTOM_RATIO,
             cfg.TRACK_ROW_COUNT,
         )
-        left_track = self._track_left_boundary(mask, rows)
-        width_model, width_reliable = self._fit_width_model_left(
-            left_track, height, width
+        center_rows = self._track_lane_one_center_rows(
+            mask, rows, height, width
         )
+        left_track = self._track_lane_one_left_boundary(center_rows, width)
         minimum_width = scale_x(cfg.TRACK_MIN_LANE_WIDTH, width)
         maximum_width = min(
             scale_x(cfg.TRACK_MAX_LANE_WIDTH, width),
             width * 0.985,
         )
-        max_right_segment_width = scale_x(
-            cfg.LEFT_BOUNDARY_MAX_SEGMENT_WIDTH, width
-        )
         measurements = []
 
         for item in left_track:
-            y_ratio = item["y"] / max(1.0, float(height))
-            predicted_width = clamp(
-                float(np.polyval(width_model, y_ratio)) * width,
-                minimum_width,
-                maximum_width,
-            )
-            right_candidates = []
-            for segment in item["segments"]:
-                if segment["width"] > max_right_segment_width:
-                    continue
-                if segment["x"] <= item["left"]:
-                    continue
-                measured_width = segment["x"] - item["left"]
-                if minimum_width <= measured_width <= maximum_width:
-                    right_candidates.append((segment, measured_width))
-
-            selected_right = None
-            if right_candidates:
-                selected_right = min(
-                    right_candidates,
-                    key=lambda value: abs(value[1] - predicted_width),
-                )
-                tolerance = self._width_tolerance(predicted_width, width)
-                if abs(selected_right[1] - predicted_width) > tolerance * 1.20:
-                    selected_right = None
-
-            if selected_right is not None:
-                right_segment, measured_lane_width = selected_right
-                right_x = right_segment["x"]
-                center_width = (
-                    predicted_width
-                    + (measured_lane_width - predicted_width)
-                    * cfg.TRACK_PAIR_CENTER_BLEND
-                )
-                center = item["left"] + center_width * 0.5
-                lane_width = measured_lane_width
+            lane_width = item["center_x"] - item["left"]
+            if minimum_width <= lane_width <= maximum_width:
+                center = (item["left"] + item["center_x"]) * 0.5
                 source = "BOTH"
                 confidence = 1.0
             else:
-                lane_width = predicted_width
-                right_x = None
                 center = item["left"] + lane_width * 0.5
                 source = "LEFT"
-                confidence = 0.68 if width_reliable else 0.56
+                confidence = 0.56
 
             measurements.append({
                 "center": center,
                 "left": item["left"],
-                "right": right_x,
+                "right": item["center_x"],
                 "lane_width": lane_width,
                 "source": source,
                 "confidence": confidence,
@@ -1406,7 +1208,7 @@ class LaneController:
     def _collect_measurements(self, mask):
         """오른쪽 실선과 원근 차선 폭으로 각 높이의 중앙점을 복원합니다."""
         if self._avoid_left_primary_active():
-            return self._collect_left_primary_measurements(mask)
+            return self._collect_lane_one_measurements(mask)
         height, width = mask.shape
         rows = np.linspace(
             height * cfg.TRACK_TOP_RATIO,
@@ -2305,11 +2107,6 @@ class LaneController:
         offset_lane_width_px = 0.0
 
         roi, mask, threshold = self._make_mask(frame)
-        if self._avoid_left_primary_active():
-            mask = self._enhance_left_lane_mask(roi, mask, mask.shape[1])
-        mask = self._clear_left_mask_band(
-            mask, mask.shape[1], self._lane_offset_lanes
-        )
         height, width = mask.shape
         single_side = None
         if cfg.CENTER_LINE_MODE:
