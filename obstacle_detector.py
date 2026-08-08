@@ -319,6 +319,10 @@ class AvoidanceController:
         if self._maneuver_phase == "COUNTER":
             self._maneuver_phase = None
             self._phase_until = 0.0
+            # 오픈루프 동안 offset=0(2차선)으로 쌓인 track_memory가 1차선
+            # 전환 직후 잘못된 실선(주차 가로선 등)을 짝짓지 않도록 초기화.
+            if lane_controller is not None:
+                lane_controller.reset_tracking()
             print("AVOID_OPEN_LOOP: 기동 완료, 카메라 차선 추종으로 전환")
 
     def _sync_lane_offset(self, lane_controller):
