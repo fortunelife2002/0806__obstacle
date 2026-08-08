@@ -13,7 +13,8 @@
    장애물까지 잡으면 안 됩니다. 정면 기준 "각도창"만으로는 두 차선이
    원근 때문에 거리가 멀어질수록 각도차가 좁아져(소실점 효과) 구분이
    안 되므로, 라이다 점을 차량 진행축 기준 직교좌표로 바꿔 판정합니다
-   (_hit_in_lane_corridor). 실제 장애물은 트랙 전체 좌표 기준 40~64cm
+   (_hit_in_lane_corridor). 실제 장애물은 config의 LIDAR_OBSTACLE_TRACK_*
+   (기본 40~64cm ± LIDAR_OBSTACLE_CORRIDOR_EXPAND_CM) 트랙 좌표 구간
    구간에 놓이므로, lateral(mm)로 환산한 그 범위 안인지로 판정해 사람 등
    다른 물체를 장애물로 오검출하는 걸 막습니다.
 
@@ -107,7 +108,7 @@ class LidarObstacleDetector:
         self._lane_offset_lanes = float(offset_lanes)
 
     def _corridor_lateral_bounds(self, distance_mm):
-        """트랙 40~64cm 구간 + 회피 오프셋 + 거리 보정 slack."""
+        """LIDAR_OBSTACLE_TRACK_* 구간 + 회피 오프셋 + 거리 보정 slack."""
         lane_shift_mm = (
             self._lane_offset_lanes
             * cfg.AVOID_LANE_DIRECTION
@@ -123,7 +124,7 @@ class LidarObstacleDetector:
         return lateral_min, lateral_max
 
     def _hit_in_lane_corridor(self, scan):
-        """차량 진행축 기준 "장애물 예상 구간"(트랙 40~64cm) 이내·전방
+        """차량 진행축 기준 "장애물 예상 구간"(LIDAR_OBSTACLE_TRACK_*) 이내·전방
         감지거리 이내에 점이 하나라도 있으면 (True, 디버그정보)를 반환합니다.
 
         차선 전체 폭(±170mm)이 아니라 실제 장애물이 놓이는 구간만 보는

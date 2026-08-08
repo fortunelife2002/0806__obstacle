@@ -60,7 +60,7 @@ def main():
         (-lane_half, 0), 2 * lane_half, y_max,
         color="#1f77b4", alpha=0.15, zorder=0, label="2차선 (우리 차선)"
     ))
-    # 실제 장애물 감지 구간 (트랙 좌표 40~64cm -> lateral min~max)
+    # 실제 장애물 감지 구간 (LIDAR_OBSTACLE_TRACK_* -> lateral min~max)
     ax.add_patch(plt.Rectangle(
         (obstacle_min, dist_min),
         obstacle_max - obstacle_min,
