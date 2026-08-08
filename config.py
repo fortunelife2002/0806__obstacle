@@ -9,6 +9,57 @@ BOX_FILTER_* 상수군을 새로 추가했습니다(아래 "박스형 표시 오
 블록). lane_controller.py의 _remove_box_structures / _confirm_horizontal_bars
 / _group_bars_into_ladders 와 짝입니다. RIGHT_GUARD_GAIN 등 기존 값은
 건드리지 않았습니다.
+
+[2026-08-06 Claude 수정] config_by_claude.py에 따로 있던 라이다 장애물
+회피 설정(LIDAR_*, AVOID_*)을 이 파일 맨 끝으로 병합했습니다. 파일이
+갈라져 있으면 어느 쪽을 고쳐도 실행 중인 main.py에는 반영이 안 되는
+문제가 있어서 config.py 하나로 합쳤습니다. 병합하며 기존 ARDUINO_PORT/
+CAMERA_PORT(COM9/1) 등 이 파일의 값은 그대로 두었으니, 다른 PC에서
+테스트했다면(COM12/2였음) 실제 장치에 맞게 다시 확인하세요.
+
+[2026-08-06 Claude 수정 2] "2차선(바깥 차선)만 달리고, 옆 1차선의
+장애물은 무시하며, 피한 뒤엔 다시 2차선으로 복귀해야 한다"는 요구사항
+반영. LIDAR_DETECT_HALF_WINDOW_DEG(각도창) 대신 차량 진행축 기준 좌우
+폭 코리더(LidarObstacleDetector._hit_in_lane_corridor)로 판정 방식을
+바꾸고, AVOID_DURATION_SECONDS 하나였던 회피 기동을 AVOID_OUT/HOLD/
+RETURN_SECONDS 세 구간으로 나눠 "피하고 다시 돌아오기"를 지원합니다.
+자세한 설계 이유는 아래 "라이다 장애물 감지" / "장애물 회피" 섹션
+주석과 obstacle_detector.py를 보세요. AVOID_HOLD_SECONDS는 아직 실차
+튜닝 전 추정값이라 실제 장애물 폭/차 길이에 맞게 반드시 재검증해야
+합니다.
+
+[2026-08-06 Claude 수정 3] 장애물 감지 판정 좌표를 트랙 전체 폭 기준
+(0/34/68cm 세 선)으로 다시 정리하고, 감지 구간을 실측된 장애물 위치
+(트랙 전체 기준 46~56cm, 우리 차선 중앙 51cm에서 ±5cm)에 맞춰
+LIDAR_OBSTACLE_LATERAL_MAX_MM을 230 -> 50으로 좁혔습니다. LIDAR_LANE_
+WIDTH_MM도 우리 차선 하나의 실제 폭(340mm)으로 바로잡았습니다(예전엔
+트랙 전체 폭 680mm를 우리 차선 폭으로 잘못 썼습니다). 자세한 내용은
+아래 "라이다 장애물 감지" 섹션 주석을 보세요.
+
+[2026-08-06 Claude 수정 4] 회피 기동 방식을 오픈루프(OUT/HOLD/RETURN
+3단계, 정해진 각도로 정해진 시간만 꺾기)에서 카메라 기반 차선 오프셋
+방식으로 완전히 바꿨습니다. 실차에서 각도/시간 조합이 조금만 어긋나도
+과회전(카메라가 트랙 밖을 봄)하거나 못 미치는 문제가 반복돼서, 이제는
+AvoidanceController가 LaneController.set_lane_offset()으로 "목표
+차선을 옆으로 옮겨라"라고만 지시하고, 실제 조향은 매 프레임 카메라
+차선 추종 PID가 계속 담당합니다. AVOID_STEER_OFFSET/AVOID_OUT_SECONDS/
+AVOID_RETURN_SECONDS는 삭제했고, AVOID_HOLD_SECONDS는 AVOID_DURATION_
+SECONDS로 이름을 바꿔 "오프셋을 얼마나 유지할지"라는 뜻으로만 씁니다.
+자세한 내용은 "장애물 회피" 섹션과 lane_controller.py의
+set_lane_offset/_calculate_control, obstacle_detector.py를 보세요.
+
+[2026-08-06 Claude 수정 5] "4초 로직을 버리고 장애물이 있을 때만
+차선을 변경하라"는 요구사항 반영. AVOID_DURATION_SECONDS/AVOID_
+COOLDOWN_SECONDS를 완전히 삭제했습니다.
+
+[2026-08-06 Claude 수정 6->7 (최종)] 처음엔 "장애물 미감지시 자동 복귀"
+(수정 5), 그 다음엔 "점선을 넘은 게 카메라로 확인되면 자동 복귀"(수정 6)
+로 시도했지만, 둘 다 "자동 복귀" 자체가 요구사항이 아니라는 걸 알게
+됐습니다. 최종적으로 자동 복귀 개념을 완전히 없애고, 장애물을 새로
+감지할 때마다 지금 있는 차선의 옆 차선으로 토글하는 방식으로
+정리했습니다(obstacle_detector.AvoidanceController 참고). 2차선에서
+감지되면 1차선으로, 그 뒤 1차선에서 또 감지되면 다시 2차선으로 —
+감지 이벤트가 없으면 마지막 설정을 계속 유지합니다.
 """
 
 # 하드웨어 연결 설정
@@ -33,8 +84,13 @@ ROI_BOTTOM = 480
 # 흰색 차선은 밝고 채도가 낮아야 합니다. 밝기만 사용하면 초록 바닥도
 # 흰색으로 처리되므로 HSV 채도 조건을 반드시 함께 사용합니다.
 WHITE_THRESHOLD = 200
-LANE_WHITE_VALUE_MIN = 175
-LANE_WHITE_SATURATION_MAX = 65
+LANE_WHITE_VALUE_MIN = 135
+LANE_WHITE_SATURATION_MAX = 85
+# 전체 ROI에 HSV 또는 국소 대비(회색 트랙 위 흰 테이프)를 적용합니다.
+LANE_TRACK_CONTRAST_MIN = 5.0
+LANE_LOCAL_BLUR_SIZE = 31
+LANE_MASK_MIN_LINE_ASPECT = 2.2
+LANE_MASK_MIN_DASH_AREA = 18.0
 REFERENCE_WIDTH = 640.0
 
 # [2026-08-05] 박스형 표시(주차 테스트 칸 등) 오검출 필터. 실차 영상
@@ -137,11 +193,12 @@ TRACK_MAX_FIT_RMSE = 22.0
 TRACK_MIN_COVERAGE = 0.42
 TRACK_MIN_CONFIDENCE = 0.55
 TRACK_START_CONFIRM_FRAMES = 3
-TRACK_PATH_FILTER = 0.65
-TRACK_MAX_NEAR_JUMP = 35.0
-TRACK_MAX_MIDDLE_JUMP = 50.0
-TRACK_MAX_PREVIEW_JUMP = 65.0
-TRACK_MAX_FAR_JUMP = 80.0
+# 경로 계수 블렌딩. 높을수록 프레임 간 조향 목표가 부드러워집니다.
+TRACK_PATH_FILTER = 0.76
+TRACK_MAX_NEAR_JUMP = 28.0
+TRACK_MAX_MIDDLE_JUMP = 42.0
+TRACK_MAX_PREVIEW_JUMP = 55.0
+TRACK_MAX_FAR_JUMP = 68.0
 TRACK_CUBIC_MIN_BOTH_POINTS = 6
 TRACK_CUBIC_MIN_BOTH_COVERAGE = 0.38
 TRACK_CUBIC_RMSE_RATIO = 0.76
@@ -157,6 +214,58 @@ TRACK_WIDTH_MIN_PAIR_ROWS = 3
 TRACK_WIDTH_MIN_PAIR_COVERAGE = 0.16
 TRACK_WIDTH_FILTER = 0.82
 TRACK_PAIR_CENTER_BLEND = 0.45
+
+# -------------------------------------------------------------------
+# 중앙선(1·2차선 사이 점선) 전용 추종 모드
+# -------------------------------------------------------------------
+# True면 좌우 경계/차선 폭 추정 대신 점선만 직접 추적합니다. 회색 바닥을
+# 왼쪽 차선으로 오인하는 문제를 피하고, 차선 변경 시 점선이 화면 왼쪽↔
+# 오른쪽으로 이동하는 것을 정상 주행으로 취급합니다.
+CENTER_LINE_MODE = False
+# 2차선(기본)에서 점선이 보이길 원하는 화면 X(640기준). 회피 오프셋은
+# 여기에 차선 폭을 더해 1차선(점선이 오른쪽) 목표를 만듭니다.
+CENTER_LINE_TARGET_X = 220.0
+CENTER_LINE_MIN_POINTS = 5
+CENTER_LINE_MIN_COVERAGE = 0.28
+CENTER_LINE_MIN_CONFIDENCE = 0.30
+CENTER_LINE_MAX_SEGMENT_WIDTH = 28.0
+CENTER_LINE_SEARCH_MARGIN = 90.0
+CENTER_LINE_GAP_GROWTH = 55.0
+CENTER_LINE_SEARCH_MIN_RATIO = 0.08
+CENTER_LINE_SEARCH_MAX_RATIO = 0.72
+# 차선 변경 시 점선이 화면 한쪽→다른 쪽으로 크게 움직여도 허용합니다.
+CENTER_LINE_MAX_NEAR_JUMP = 200.0
+CENTER_LINE_MAX_MIDDLE_JUMP = 240.0
+CENTER_LINE_MAX_PREVIEW_JUMP = 280.0
+CENTER_LINE_MAX_FAR_JUMP = 320.0
+CENTER_LINE_MAX_FIT_RMSE = 28.0
+
+# 왼쪽 경계(점선) 후보로 쓸 세그먼트 최대 폭(px, 640기준). 이보다 넓은
+# 흰 덩어리는 회색 바닥/반사로 보고 제외합니다(점선 조각은 얇음).
+LEFT_BOUNDARY_MAX_SEGMENT_WIDTH = 30.0
+# 회피 중(차선 오프셋 활성)에는 왼쪽 경계를 쓰지 않고 오른쪽 실선+학습
+# 폭만으로 중앙을 복원합니다. 왼쪽으로 이동할 때 바닥이 차선으로
+# 잡혀 BOTH 판정이 깨지는 문제를 막습니다.
+# 단, 1차선(왼쪽) 회피 시에는 왼쪽 실선이 기준이므로 lane_controller가
+# AVOID_LEFT_PRIMARY_TRACKING으로 오른쪽 전용 모드를 끕니다.
+AVOID_RIGHT_ONLY_TRACKING = True
+# 1차선 회피 중 중앙 점선 왼쪽에서 가장 오른쪽 실선을 왼쪽 차선으로 씁니다.
+AVOID_LEFT_PRIMARY_TRACKING = True
+# 중앙 점선과 왼쪽 실선 사이 최소 간격(px, 640기준).
+LANE_ONE_CENTER_MARGIN = 12.0
+# 1차선 중앙 점선 후보 최소 x 비율(이보다 오른쪽 얇은 선만 점선으로 봄).
+LANE_ONE_CENTER_MIN_X_RATIO = 0.32
+# 1차선 왼쪽 실선 후보 세그먼트 폭(px, 640기준). 점선보다 넓은 실선만 고릅니다.
+LANE_ONE_SOLID_MIN_SEGMENT_WIDTH = 4.0
+LANE_ONE_SOLID_MAX_SEGMENT_WIDTH = 45.0
+# 회피 중 차선이 잠깐 안 보여도 MEMORY를 더 오래 유지합니다(프레임).
+AVOID_MEMORY_FRAMES = 90
+
+# 회피 중에는 오른쪽 실선+학습 폭만 씁니다(왼쪽 바닥 오인식 방지).
+AVOID_RIGHT_ONLY_JUMP_NEAR = 120.0
+AVOID_RIGHT_ONLY_JUMP_MIDDLE = 150.0
+AVOID_RIGHT_ONLY_JUMP_PREVIEW = 180.0
+AVOID_RIGHT_ONLY_JUMP_FAR = 220.0
 
 # 한쪽 차선만 보일 때의 안전 추적 설정입니다. 양쪽 차선으로 폭을 먼저
 # 학습한 뒤에만 사용하며, 보이는 경계와 저장된 폭으로 중앙을 복원합니다.
@@ -237,9 +346,9 @@ PREVIEW_Y_RATIO = 0.34
 # 5.01->5.14(+2.6%)였다. 검출 쪽 위험은 낮다.
 # 판정: 진동 진폭이 줄면 성공. 커브에서 안쪽을 미리 파고들거나(코너
 #   컷) 반응이 굼떠지면 과한 것이므로 0.14/0.10/0.24 정도로 낮출 것.
-PREVIEW_TRACKING_WEIGHT = 0.10
-PREVIEW_SPEED_GAIN = 0.16
-PREVIEW_MAX_WEIGHT = 0.36
+PREVIEW_TRACKING_WEIGHT = 0.08
+PREVIEW_SPEED_GAIN = 0.10
+PREVIEW_MAX_WEIGHT = 0.28
 PREVIEW_SINGLE_WEIGHT = 0.15
 PREVIEW_SINGLE_MIN_POINTS = 7
 PREVIEW_SINGLE_MIN_COVERAGE = 0.45
@@ -247,17 +356,17 @@ PREVIEW_ERROR_LIMIT = 180.0
 PREVIEW_SINGLE_RAMP_FRAMES = 3
 HEADING_CONTROL_GAIN = 0.02
 SIGNED_CURVATURE_GAIN = 0.01
-CURVE_OUTSIDE_HEADING_GAIN = 0.05
-CURVE_OUTSIDE_CURVATURE_GAIN = 0.03
-CURVE_OUTSIDE_MAX = 14.0
-CURVE_OUTSIDE_FILTER = 0.82
-CURVE_OUTSIDE_SPEED_GAIN = 0.35
+CURVE_OUTSIDE_HEADING_GAIN = 0.04
+CURVE_OUTSIDE_CURVATURE_GAIN = 0.02
+CURVE_OUTSIDE_MAX = 12.0
+CURVE_OUTSIDE_FILTER = 0.88
+CURVE_OUTSIDE_SPEED_GAIN = 0.25
 CONTROL_ERROR_LIMIT = 150.0
 # 왼쪽으로 꺾이는 구간에서는 중앙 추정만 사용하지 않고 실제 왼쪽 점선에서
 # 복원한 차로 중앙을 함께 사용합니다. 점선 공백은 짧게만 기억합니다.
 LEFT_ANCHOR_CURVE_TRIGGER = 8.0
-LEFT_ANCHOR_BLEND = 0.75
-LEFT_ANCHOR_FILTER = 0.70
+LEFT_ANCHOR_BLEND = 0.55
+LEFT_ANCHOR_FILTER = 0.84
 LEFT_ANCHOR_MEMORY_FRAMES = 6
 LEFT_ANCHOR_ERROR_LIMIT = 80.0
 LATERAL_SAFETY_START_RATIO = 0.08
@@ -284,27 +393,20 @@ LATERAL_SAFETY_MAX = 10.0
 # 보정력을 다 쓸 수 있게 여유폭을 15px -> 60px로 넓혔습니다. 목표는
 # '평소엔 guard만으로 복귀, hard는 S자처럼 정말 급할 때만 발동'입니다.
 # 실차에서 재검증 필요.
-RIGHT_SAFE_CLEARANCE_RATIO = 0.60          # 0.48 -> 0.60 (guard를 더 일찍 시작)
-RIGHT_SAFE_CLEARANCE_MIN = 230.0           # 185.0 -> 230.0
-RIGHT_GUARD_DEADBAND = 3.0
-# [2026-08-06 01:xx Claude 수정] 1.30 -> 0.79. soft(230)~hard(170) 여유폭
-# 60px 전체를 0->45로 매끄럽게 채우려면 gain=45/(60-3)≈0.79가 필요한데,
-# 1.30이면 여유폭이 63% 남은 시점(clearance=192.4)에서 이미 45로
-# 포화돼 그 뒤로는 실제 여유와 무관하게 45 고정 출력(on/off 릴레이)이
-# 된다. 실차 로그(20260806-0312-19, 8초 부근)에서 guard=45 고정 +
-# error가 -150~+42 왕복하는 패턴으로 재확인. 8/5에 이미 계산/설명했으나
-# 실제 파일에는 반영이 안 돼 있었다.
-RIGHT_GUARD_GAIN = 0.79                    # 1.30 -> 0.79
-RIGHT_GUARD_MAX = 45.0                     # 40.0 -> 45.0
+RIGHT_SAFE_CLEARANCE_RATIO = 0.54
+RIGHT_SAFE_CLEARANCE_MIN = 210.0
+RIGHT_GUARD_DEADBAND = 5.0
+RIGHT_GUARD_GAIN = 0.55
+RIGHT_GUARD_MAX = 38.0
 BOUNDARY_GUARD_MAX_Y_GAP_RATIO = 0.20
 BOUNDARY_HARD_CLEARANCE_RATIO = 0.44       # 그대로 (S자 대응력 보존)
 BOUNDARY_HARD_CLEARANCE_MIN = 170.0        # 그대로
-BOUNDARY_STEER_GAIN = 0.22
-BOUNDARY_STEER_MAX = 10.0
-BOUNDARY_STEER_FILTER = 0.84
-BOUNDARY_HARD_STEER_OFFSET = 12.0          # 그대로 (S자 대응력 보존)
-BOUNDARY_HARD_STEER_RATE = 130.0           # 그대로
-BOUNDARY_HARD_CONFIRM_FRAMES = 2
+BOUNDARY_STEER_GAIN = 0.16
+BOUNDARY_STEER_MAX = 8.0
+BOUNDARY_STEER_FILTER = 0.90
+BOUNDARY_HARD_STEER_OFFSET = 10.0
+BOUNDARY_HARD_STEER_RATE = 95.0
+BOUNDARY_HARD_CONFIRM_FRAMES = 3
 INFERRED_BOUNDARY_GUARD_SCALE = 0.50
 # [2026-08-06 Claude 추가] 경계 근처에서 preview(전방주시) 비중을 줄일 때의
 # 하한. 예전엔 하한이 0이라 hard_boundary가 켜지는 순간 preview_weight가
@@ -316,25 +418,22 @@ INFERRED_BOUNDARY_GUARD_SCALE = 0.50
 #   preview가 과하게 살아난 것이므로 0.3 정도로 낮출 것.
 BOUNDARY_PREVIEW_MIN_SCALE = 0.5
 
-# 조향 안정화 설정
-ERROR_FILTER = 0.68
-DERIVATIVE_FILTER = 0.82
+# -------------------------------------------------------------------
+# 조향 안정화 (기본 주행 진동 억제)
+# -------------------------------------------------------------------
+# ERROR_FILTER/DERIVATIVE_FILTER: 높을수록 오차·변화율이 더 부드럽게 전달됩니다.
+# STEER_KP 낮추고 STEER_KD·DEADBAND·RATE를 올리면 좌우 지그재그가 줄어듭니다.
+# 커브에서 반응이 둔해지면 KP를 0.01~0.02 올리거나 RATE를 5~10 내리세요.
+ERROR_FILTER = 0.78
+DERIVATIVE_FILTER = 0.88
 STEER_RIGHT = 100
 STEER_LEFT = 210
-STEER_KP = 0.17
-# [2026-08-06 Claude 수정] 0.004 -> 0.015. 실차 로그(20260806-0339-30,
-# 34~40초, 4초 주기로 error가 -91~+76 왕복)에서 그 진동의 실제 변화율
-# (~85px/s)로 계산하면 미분항 기여가 85*0.004=0.34 PWM으로 사실상 0.
-# 미분항이 이름만 있고 실제로는 진동 억제에 전혀 기여를 못 하고 있었다.
-# 한 번에 목표치(0.06~0.12 추정)까지 올리면 잡음 증폭 위험이 커서
-# 4배 정도(0.015)만 먼저 올려 방향을 본다.
-# 판정: 진폭/주기가 줄면 성공. 새로운 고주파 떨림이 생기면 과도한
-# 것이니 0.008~0.010 사이로 낮출 것.c
-STEER_KD = 0.06
-STEER_DEADBAND = 4.0
-STEER_RATE_PER_SECOND = 95.0
-HIGH_SPEED_STEER_RATE_REDUCTION = 0.20
-MEMORY_STEER_RETAIN_RATIO = 0.45
+STEER_KP = 0.13
+STEER_KD = 0.09
+STEER_DEADBAND = 7.0
+STEER_RATE_PER_SECOND = 72.0
+HIGH_SPEED_STEER_RATE_REDUCTION = 0.32
+MEMORY_STEER_RETAIN_RATIO = 0.55
 
 # S자에서는 정확도를 우선해 직선보다 자동으로 감속합니다.
 BASE_SPEED = 180
@@ -353,3 +452,189 @@ CURVATURE_SPEED_GAIN = 0.16
 WINDOW_NAME = "Autonomous Car"
 SHOW_DEBUG = True
 PRINT_INTERVAL = 10
+
+# -------------------------------------------------------------------
+# BEV 차선 추종 (bev_lane_controller.py, Phase1-43 기반)
+# -------------------------------------------------------------------
+# 고정 임계값 이진화 + 호모그래피. 카메라/마커가 바뀌면 bev_calib.json
+# 또는 BEV_SOURCE_POINTS를 다시 측정하세요.
+BEV_CALIB_FILE = "bev_calib.json"
+BEV_SOURCE_POINTS = (
+    (132.0, 260.0),
+    (549.0, 276.0),
+    (464.0, 111.0),
+    (226.5, 101.0),
+)
+BEV_MARKER_WIDTH_CM = 89.0
+BEV_MARKER_LENGTH_CM = 120.0
+BEV_PIXELS_PER_CM = 3.0
+BEV_WIDTH = 640
+BEV_HEIGHT = 520
+BEV_NEAR_MARGIN_PX = 40
+
+BEV_THRESHOLD_VALUE = 200
+BEV_GAUSSIAN_KERNEL = (5, 5)
+BEV_HORIZONTAL_KERNEL_WIDTH = 80
+BEV_HORIZONTAL_KERNEL_HEIGHT = 1
+BEV_VERTICAL_RECONNECT_HEIGHT = 9
+
+BEV_SCAN_BOTTOM_PX = 505
+BEV_SCAN_TOP_PX = 90
+BEV_SCAN_STEP_PX = 10
+BEV_SCAN_HALF_HEIGHT_PX = 3
+BEV_MIN_LINE_WIDTH_PX = 4
+BEV_MAX_LINE_WIDTH_PX = 80
+BEV_TRACK_MIN_X = 80
+BEV_TRACK_MAX_X = 600
+BEV_TRACK_WINDOW_PX = 45
+BEV_STEP_JUMP_PX = 20
+BEV_ADJACENT_MARGIN_PX = 12.0
+
+BEV_MIN_CENTER_POINTS = 12
+BEV_MIN_FIT_SPAN_CM = 60.0
+BEV_FIT_OUTLIER_CM = 5.0
+BEV_FIT_MAX_RESIDUAL_CM = 8.0
+BEV_CURVATURE_LIMIT_ABS = 0.0110
+BEV_MEMORY_FRAMES = 15
+
+BEV_FF_COUNTS_PER_CURVATURE = 4900.0
+BEV_FF_LIMIT = 80.0
+BEV_KE_COUNTS_PER_CM = 1.30
+BEV_CTE_LIMIT = 60.0
+BEV_KPSI_COUNTS_PER_DEG = 2.8
+BEV_PSI_LIMIT = 40.0
+BEV_STEER_RATE_PER_SECOND = 120.0
+
+# -------------------------------------------------------------------
+# 라이다 장애물 감지 (obstacle_detector.py)
+# -------------------------------------------------------------------
+# 아두이노/카메라와 별개로 라이다만 연결하는 시리얼 포트입니다.
+# 장치관리자(윈도우) 또는 `python -m serial.tools.list_ports`로 확인하세요.
+LIDAR_ENABLED = True
+LIDAR_PORT = "COM3"
+
+# 라이다 스캔 각도 중 "차량 정면"에 해당하는 값(도)입니다. 라이다 장착
+# 방향에 따라 다르므로 반드시 calibrate_lidar_angle.py로 실차에서 먼저
+# 확인한 뒤 이 값을 바꿔주세요. 기본값 0은 임시값입니다.
+LIDAR_FRONT_ANGLE = 0.0
+
+# [2026-08-06 Claude 수정] 트랙이 2차선이고 우리는 바깥쪽 2차선만 달리므로,
+# 옆(1차선) 차선의 장애물까지 잡으면 안 된다는 요구사항이 있었습니다.
+# 기존에는 "정면 기준 ±N도"라는 순수 각도창으로 판단했는데, 이 방식은
+# 두 차선이 원근 때문에 거리가 멀어질수록 각도차가 점점 좁아져(소실점
+# 효과) 어느 거리부턴 각도만으로 내 차선/옆 차선을 구분할 수 없다는
+# 근본적 한계가 있습니다.
+#
+# 그래서 각도창 대신, 라이다 점을 차량 진행축 기준 직교좌표로 바꿔
+# "횡방향 거리(진행축에서 좌우로 얼마나 떨어졌나)가 내 차선 폭 절반
+# 이내인가"로 판정하도록 obstacle_detector.py를 바꿨습니다
+# (LidarObstacleDetector._hit_in_lane_corridor 참고). 이 방식은 거리에
+# 무관하게 항상 "내 차선 폭"만큼만 보므로 원근 문제가 없습니다.
+#
+# [2026-08-06 Claude 수정 2] 트랙 전체 폭 기준 좌표로 다시 정리했습니다.
+# 트랙을 가로지르는 선 3개를 안쪽부터 0cm(1차선 안쪽 경계) / 34cm(1차선과
+# 2차선 사이 중앙선) / 68cm(2차선 바깥쪽 경계, 트랙 전체 끝)라고 하면,
+# 우리가 달리는 2차선은 34~68cm 구간(폭 34cm)이고 그 중앙은 51cm입니다.
+# 라이다가 차체 중앙에 고정돼 있고(범퍼 아래 판을 덧대 그 앞에 장착,
+# 좌우 오프셋 없음) 차량이 2차선 중앙을 달린다고 가정하면, 라이다 기준
+# lateral=0mm는 이 51cm 지점과 같습니다.
+#
+# LIDAR_LANE_WIDTH_MM은 우리가 달리는 2차선 하나의 폭입니다(340mm).
+# 실측치가 바뀌거나 라이다가 차체 중앙에서 벗어나 있으면 이 값과 아래
+# 오프셋 가정을 함께 고쳐야 합니다. 이 값 자체는 판정에 직접 쓰이지
+# 않고, 아래 LIDAR_OBSTACLE_LATERAL_*_MM을 정하기 위한 참고 치수입니다.
+LIDAR_LANE_WIDTH_MM = 340.0
+
+# 트랙 전체 좌표(안쪽 0cm / 중앙선 34cm / 바깥 68cm) 기준으로 감지할
+# 횡방향 구간입니다. 2차선 중앙(차량 정중앙)은 트랙 51cm이고, lateral
+# (라이다 기준 mm)는 (트랙_cm - 51) * 10 으로 환산합니다.
+# 예: 38cm -> -130mm, 66cm -> +150mm (기본 40~64cm에서 좌우 각 2cm 확장)
+LIDAR_TRACK_LANE2_CENTER_CM = 51.0
+# 장애물 예상 구간(트랙 좌표)의 기본 폭. LIDAR_OBSTACLE_CORRIDOR_EXPAND_CM만큼
+# 좌우로 넓혀 실제 인식 폭을 조정합니다.
+LIDAR_OBSTACLE_TRACK_BASE_MIN_CM = 40.0
+LIDAR_OBSTACLE_TRACK_BASE_MAX_CM = 64.0
+LIDAR_OBSTACLE_CORRIDOR_EXPAND_CM = 2.0
+LIDAR_OBSTACLE_TRACK_MIN_CM = (
+    LIDAR_OBSTACLE_TRACK_BASE_MIN_CM - LIDAR_OBSTACLE_CORRIDOR_EXPAND_CM
+)
+LIDAR_OBSTACLE_TRACK_MAX_CM = (
+    LIDAR_OBSTACLE_TRACK_BASE_MAX_CM + LIDAR_OBSTACLE_CORRIDOR_EXPAND_CM
+)
+LIDAR_OBSTACLE_LATERAL_MIN_MM = (
+    LIDAR_OBSTACLE_TRACK_MIN_CM - LIDAR_TRACK_LANE2_CENTER_CM
+) * 10.0
+LIDAR_OBSTACLE_LATERAL_MAX_MM = (
+    LIDAR_OBSTACLE_TRACK_MAX_CM - LIDAR_TRACK_LANE2_CENTER_CM
+) * 10.0
+
+# 1m 50cm 이내만 "장애물"로 판단합니다. 라이다 값은 mm 단위입니다.
+LIDAR_DETECT_MIN_DISTANCE_MM = 50.0
+LIDAR_DETECT_MAX_DISTANCE_MM = 1500.0
+# 정면 각도(LIDAR_FRONT_ANGLE) 미세 오차가 멀수록 lateral(mm)로
+# 커집니다. 1.5m에서 ±3°면 약 ±78mm — 이 비율만큼 거리에 비례해
+# 감지 폭을 살짝 넓혀 먼 거리(150cm)에서도 잡히게 합니다.
+LIDAR_LATERAL_DISTANCE_SLACK_RATIO = 0.04
+
+# 노이즈로 인한 오검출을 막기 위해, 연속 스캔에서 이 횟수 이상 감지되어야
+# "장애물 있음"으로 확정합니다.
+LIDAR_DETECT_CONFIRM_COUNT = 2
+
+# 라이다 스캔 스레드가 이 시간(초) 동안 새 데이터를 못 주면 통신이 끊긴
+# 것으로 보고 안전하게 "장애물 없음"으로 취급합니다(정지가 아니라 무시).
+LIDAR_STALE_SECONDS = 0.5
+
+# -------------------------------------------------------------------
+# 장애물 회피(카메라 기반 차선 오프셋) 기동 (obstacle_detector.py: AvoidanceController)
+# -------------------------------------------------------------------
+# [2026-08-06 Claude 수정 3] 기존에는 "정해진 각도로 정해진 시간만 꺾는"
+# 오픈루프(카메라 무시) 방식으로 OUT(1차선 진입)->HOLD(직진 통과)->
+# RETURN(2차선 복귀) 3단계를 시간으로만 관리했습니다. 실차에서 이
+# 방식은 각도/시간 조합에 아주 민감해서(1.4초는 부족, 4.0초+각도35는
+# 과회전으로 카메라가 트랙 밖을 보는 등) 계속 재조정이 필요했습니다.
+#
+# 그래서 방식을 바꿨습니다: 이제 AvoidanceController는 조향을 직접
+# 계산하지 않고, LaneController.set_lane_offset()으로 "목표 차선을
+# 옆으로 옮겨라"라고만 지시합니다. 실제 조향은 기존 카메라 차선 추종
+# PID(_calculate_control)가 매 프레임 계속 담당합니다 — 즉 옆 차선에
+# 정확히 안착할 때까지 카메라 피드백이 계속 작동하고, 각도/시간을
+# 따로 맞출 필요가 없습니다. reset_tracking()도 더 이상 필요 없습니다
+# (오픈루프로 카메라를 무시하는 구간이 없어져서, 차선 인식이 한 번도
+# 끊기지 않습니다).
+#
+# [2026-08-06 Claude 수정 5] 시간 기반 로직(AVOID_DURATION_SECONDS,
+# AVOID_COOLDOWN_SECONDS)을 완전히 없앴습니다. 자동 복귀도 없고, 장애물을
+# 새로 감지할 때마다(상승 에지) 옆 차선으로 토글합니다. 감지가 잠깐
+# 끊겼다 다시 잡혀도 AVOID_TOGGLE_HOLD_SECONDS 안에는 토글하지 않아
+# 차선 변경 도중 목표가 원위치로 돌아가지 않게 합니다.
+#
+# 주의: 라이다 감지 코리더는 차량 진행축 기준 고정 폭이라, 회피 조향을
+# 시작하면 장애물이 코리더 밖으로 나가 감지가 꺼질 수 있습니다. 자동
+# 복귀는 하지 않으므로 오프셋은 유지되지만, 감지 깜빡임으로 토글이
+# 연속 발생하면 목표가 왔다 갔다 할 수 있어 홀드 시간이 필요합니다.
+AVOID_LANE_OFFSET_LANES = 1.0
+
+# +1: STEER_LEFT 방향(왼쪽 차선, 1차선)으로 회피, -1: STEER_RIGHT
+# 방향(오른쪽 차선)으로 회피. 트랙에서 1차선이 어느 쪽인지에 맞게
+# 바꾸세요. 부호만 쓰이고(LaneController.set_lane_offset의 방향 결정),
+# 복귀는 오프셋을 0으로 되돌리기만 하면 되므로 별도 반대방향 설정이
+# 필요 없습니다.
+AVOID_LANE_DIRECTION = 1
+
+# 회피 중(오픈루프 종료 후 카메라 추종 포함) 속도 상한입니다.
+AVOID_SPEED = 120
+
+# 오픈루프 차선 변경: 최대 조향으로 옆 차선 이동 후 반대 조향으로 자세 보정.
+AVOID_OPEN_LOOP_ENABLED = True
+AVOID_OPEN_LOOP_SPEED = 120
+AVOID_OPEN_LOOP_OUT_SECONDS = 1.5
+AVOID_OPEN_LOOP_COUNTER_SECONDS = 0.4
+# 1차선(왼쪽)으로 갈 때 OUT=STEER_LEFT, COUNTER=STEER_RIGHT 입니다.
+AVOID_OPEN_LOOP_STEER_LEFT = STEER_LEFT
+AVOID_OPEN_LOOP_STEER_RIGHT = STEER_RIGHT
+
+# 장애물 감지 토글 후 이 시간(초) 동안은 감지가 잠깐 끊겼다 다시 잡혀도
+# 목표 차선을 다시 토글하지 않습니다. 차선 변경이 끝나기 전에 라이다
+# 감지가 깜빡이면 0<->1 오프셋이 왔다 갔다 하며 회피가 중간에 멈출 수
+# 있습니다.
+AVOID_TOGGLE_HOLD_SECONDS = 3.0
