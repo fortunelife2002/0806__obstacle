@@ -358,7 +358,7 @@ class AvoidanceController:
                     )
         self._was_detected = obstacle_detected
 
-    def finalize_frame(self, lane_command):
+    def finalize_frame(self, lane_command, lane_controller=None):
         """카메라 처리 후 매 프레임 호출합니다."""
         now = time.monotonic()
         self._advance_open_loop_maneuver(now, lane_controller)
