@@ -208,6 +208,43 @@ class LaneController:
         return mask
 
     @staticmethod
+    def _enhance_left_lane_mask(roi, mask, width):
+        """1차선 회피 시 희미한 왼쪽 외곽 실선이 마스크에 남도록 보강합니다."""
+        cutoff = int(scale_x(cfg.LANE_MASK_LEFT_TRACK_MAX_X, width))
+        if cutoff <= 0:
+            return mask
+
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        saturation = hsv[:, :, 1]
+        value = hsv[:, :, 2]
+        blur_size = cfg.LANE_LOCAL_BLUR_SIZE | 1
+        local_mean = cv2.GaussianBlur(gray, (blur_size, blur_size), 0)
+        contrast = cv2.subtract(gray, local_mean)
+
+        left_value = value[:, :cutoff]
+        left_sat = saturation[:, :cutoff]
+        left_contrast = contrast[:, :cutoff]
+        bright = (
+            (left_value >= cfg.LANE_LEFT_VALUE_MIN_AVOID)
+            & (left_sat <= cfg.LANE_WHITE_SATURATION_MAX)
+            & (left_contrast >= cfg.LANE_LEFT_TRACK_CONTRAST_MIN)
+        ).astype(np.uint8) * 255
+        edge = (
+            left_contrast >= cfg.LANE_LEFT_TRACK_CONTRAST_MIN
+        ).astype(np.uint8) * 255
+        boosted = cv2.bitwise_or(bright, edge)
+        boosted = cv2.morphologyEx(
+            boosted,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_RECT, (3, 9)),
+        )
+        markers = LaneController._extract_lane_markers(boosted, width)
+        mask[:, :cutoff] = cv2.bitwise_or(mask[:, :cutoff], markers[:, :cutoff])
+        return mask
+
+    @staticmethod
     def _clear_left_mask_band(mask, width, lane_offset_lanes=0.0):
         """회피 중에만 왼쪽 주차장 영역을 마스크에서 제거합니다."""
         if lane_offset_lanes == 0.0:
@@ -2268,6 +2305,8 @@ class LaneController:
         offset_lane_width_px = 0.0
 
         roi, mask, threshold = self._make_mask(frame)
+        if self._avoid_left_primary_active():
+            mask = self._enhance_left_lane_mask(roi, mask, mask.shape[1])
         mask = self._clear_left_mask_band(
             mask, mask.shape[1], self._lane_offset_lanes
         )

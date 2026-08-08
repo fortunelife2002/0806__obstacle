@@ -62,6 +62,61 @@ def make_synthetic_track_frame(width=640, height=480):
     return frame
 
 
+def make_lane1_faint_left_frame(width=640, height=480, left_value=128):
+    """1차선 시점: 희미한 왼쪽 실선(V<135) + 밝은 오른쪽 점선."""
+    frame = np.full((height, width, 3), 118, dtype=np.uint8)
+    for y in range(height):
+        x_left = int(75 + (y - height) * 0.04)
+        x_right = int(420 + (y - height) * 0.08)
+        for dx in range(-2, 3):
+            xl = x_left + dx
+            xr = x_right + dx
+            if 0 <= xl < width:
+                value = left_value
+                frame[y, xl] = (value, value, value)
+            if 0 <= xr < width:
+                frame[y, xr] = (250, 250, 250)
+    return frame
+
+
+def simulate_lane1_left_mask():
+    """1차선 회피 시 희미한 왼쪽 실선이 마스크·추적에 잡히는지 검증."""
+    frame = make_lane1_faint_left_frame(left_value=128)
+    lc = LaneController()
+    lc.set_lane_offset(cfg.AVOID_LANE_OFFSET_LANES)
+
+    roi, mask, _ = LaneController._make_mask(frame)
+    left_before = np.count_nonzero(mask[:, : mask.shape[1] // 3])
+    mask = LaneController._enhance_left_lane_mask(roi, mask, mask.shape[1])
+    left_after = np.count_nonzero(mask[:, : mask.shape[1] // 3])
+
+    rows = np.linspace(
+        mask.shape[0] * cfg.TRACK_TOP_RATIO,
+        mask.shape[0] * cfg.TRACK_BOTTOM_RATIO,
+        cfg.TRACK_ROW_COUNT,
+    )
+    left_track = lc._track_left_boundary(mask, rows)
+
+    for _ in range(cfg.TRACK_START_CONFIRM_FRAMES):
+        result = lc.update(frame)
+
+    print("\n=== 1차선 왼쪽 실선 시뮬레이션 ===")
+    print(f"왼쪽 마스크 보강 전/후: {left_before} -> {left_after} px")
+    print(f"왼쪽 경계 추적 포인트: {len(left_track)}")
+    print(
+        f"left_primary={lc._avoid_left_primary_active()} "
+        f"status={result.get('status')} "
+        f"conf={result.get('confidence', 0):.2f}"
+    )
+
+    ok = (
+        left_after > 0
+        and len(left_track) >= cfg.SINGLE_LANE_MIN_POINTS
+        and result.get("status") not in ("LOST", "SINGLE_RIGHT")
+    )
+    return ok
+
+
 def simulate_mask():
     import cv2
 
@@ -128,9 +183,11 @@ def simulate_lidar_distances():
 
 def main():
     mask_ok = simulate_mask()
+    lane1_ok = simulate_lane1_left_mask()
     lidar_ok = simulate_lidar_distances()
     print("\n=== 결과 ===")
     print(f"마스크(바닥 덩어리 억제): {'PASS' if mask_ok else 'CHECK'}")
+    print(f"1차선 왼쪽 실선 추적: {'PASS' if lane1_ok else 'FAIL'}")
     print(f"라이다 150cm/50cm 감지: {'PASS' if lidar_ok else 'CHECK'}")
     if cfg.LIDAR_FRONT_ANGLE == 0.0:
         print(

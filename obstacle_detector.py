@@ -318,14 +318,22 @@ class AvoidanceController:
         if self._maneuver_phase == "COUNTER":
             self._maneuver_phase = None
             self._phase_until = 0.0
-            if lane_controller is not None:
-                lane_controller.set_lane_offset(self._current_offset)
             print("AVOID_OPEN_LOOP: 기동 완료, 카메라 차선 추종으로 전환")
+
+    def _sync_lane_offset(self, lane_controller):
+        """오픈루프가 아닐 때 lane_controller 오프셋을 회피 목표와 맞춥니다."""
+        if lane_controller is None:
+            return
+        if self._maneuver_phase is None:
+            lane_controller.set_lane_offset(self._current_offset)
+        elif cfg.AVOID_OPEN_LOOP_ENABLED:
+            lane_controller.set_lane_offset(0.0)
 
     def begin_frame(self, obstacle_detected, lane_controller):
         """카메라 처리 전에 매 프레임 호출합니다."""
         now = time.monotonic()
         self._advance_open_loop_maneuver(now, lane_controller)
+        self._sync_lane_offset(lane_controller)
 
         if obstacle_detected and not self._was_detected:
             if (
@@ -362,6 +370,7 @@ class AvoidanceController:
         """카메라 처리 후 매 프레임 호출합니다."""
         now = time.monotonic()
         self._advance_open_loop_maneuver(now, lane_controller)
+        self._sync_lane_offset(lane_controller)
 
         if self._maneuver_phase == "OUT":
             return {
