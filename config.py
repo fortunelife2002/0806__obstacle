@@ -188,6 +188,13 @@ TRACK_RIGHT_LOCKED_MIN_OFFSET_RATIO = -0.05
 TRACK_RIGHT_LOCKED_SEARCH_WIDTH_RATIO = 0.55
 TRACK_RIGHT_SEARCH_MARGIN = 70.0
 TRACK_RIGHT_GAP_GROWTH = 45.0
+# 1차선 회피 시 왼쪽 외곽 실선을 고정 추적할 때 쓰는 탐색 한계(px, 640기준).
+TRACK_LEFT_MAX_X = 400.0
+TRACK_LEFT_MAX_OFFSET_RATIO = 0.20
+TRACK_LEFT_LOCKED_MAX_OFFSET_RATIO = -0.05
+TRACK_LEFT_LOCKED_SEARCH_WIDTH_RATIO = 0.55
+TRACK_LEFT_SEARCH_MARGIN = 70.0
+TRACK_LEFT_GAP_GROWTH = 45.0
 TRACK_SEARCH_MARGIN = 70.0
 TRACK_MIN_POINTS = 6
 TRACK_POLY_DEGREE = 3
@@ -249,7 +256,11 @@ LEFT_BOUNDARY_MAX_SEGMENT_WIDTH = 30.0
 # 회피 중(차선 오프셋 활성)에는 왼쪽 경계를 쓰지 않고 오른쪽 실선+학습
 # 폭만으로 중앙을 복원합니다. 왼쪽으로 이동할 때 바닥이 차선으로
 # 잡혀 BOTH 판정이 깨지는 문제를 막습니다.
+# 단, 1차선(왼쪽) 회피 시에는 왼쪽 실선이 기준이므로 lane_controller가
+# AVOID_LEFT_PRIMARY_TRACKING으로 오른쪽 전용 모드를 끕니다.
 AVOID_RIGHT_ONLY_TRACKING = True
+# 1차선 회피 중 왼쪽 외곽 실선을 기준으로 추적합니다(오른쪽은 점선).
+AVOID_LEFT_PRIMARY_TRACKING = True
 # 회피 중(OFS!=0)에만 왼쪽 ROI를 지울 때 쓰는 폭(px, 640기준).
 LANE_MASK_CLEAR_LEFT_MAX_X_AVOID = 310.0
 # 회피 중 차선이 잠깐 안 보여도 MEMORY를 더 오래 유지합니다(프레임).
