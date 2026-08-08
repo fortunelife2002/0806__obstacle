@@ -7,8 +7,8 @@
 나중에 기능을 얹을 자리로 그대로 남겨뒀습니다.
 
 라이다 장애물 회피(obstacle_detector.py)는 차선 추종과 별개 레이어로
-추가했습니다. [2026-08-06 Claude 수정 3] 이제 조향은 항상 카메라 차선
-추종(lane_controller)이 계산합니다 — AvoidanceController는 매 프레임
+추가했습니다. [2026-08-08] 조향은 BEV 기반 차선 추종(bev_lane_controller)이
+계산합니다 — AvoidanceController는 매 프레임
 카메라 처리 "전"에 먼저 호출해 필요하면 lane_controller에 차선 오프셋을
 지시하고(begin_frame), 카메라 처리 "후"에 다시 호출해 최종 속도/조향과
 로그용 reason을 받습니다(finalize_frame). 자세한 임계값/기동 파라미터는
@@ -21,7 +21,7 @@ import cv2
 
 import config as cfg
 from hardware_controller import HardwareController
-from lane_controller import LaneController
+from bev_lane_controller import BevLaneController
 from obstacle_detector import AvoidanceController, LidarObstacleDetector
 
 
@@ -95,6 +95,7 @@ def draw_status(frame, lane_result, command, fps, obstacle_detected, lidar_debug
         frame,
         (
             f"LANE:{lane_result['status']} "
+            f"BEV:L{lane_result.get('lane_mode', '-')} "
             f"N:{lane_result['near_source']} "
             f"F:{lane_result['far_source']} "
             f"ERR:{lane_result['center_error']:.0f} "
@@ -140,13 +141,13 @@ def draw_status(frame, lane_result, command, fps, obstacle_detected, lidar_debug
         2,
     )
     if cfg.SHOW_DEBUG:
-        LaneController.draw_debug(frame, lane_result)
+        BevLaneController.draw_debug(frame, lane_result)
     return frame
 
 
 def main():
     hardware = HardwareController()
-    lane_controller = LaneController()
+    lane_controller = BevLaneController()
     lidar_detector = LidarObstacleDetector()
     avoidance = AvoidanceController()
 
@@ -219,7 +220,10 @@ def main():
             draw_status(frame, lane_result, command, fps, obstacle_detected, lidar_debug)
             cv2.imshow(cfg.WINDOW_NAME, frame)
             if cfg.SHOW_DEBUG:
-                cv2.imshow("Lane Mask", lane_result["mask"])
+                cv2.imshow("BEV Mask", lane_result["mask"])
+                bev_colour = lane_result.get("bev_colour")
+                if bev_colour is not None:
+                    cv2.imshow("BEV View", bev_colour)
 
             if frame_count % cfg.PRINT_INTERVAL == 0:
                 print(

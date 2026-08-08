@@ -454,6 +454,58 @@ SHOW_DEBUG = True
 PRINT_INTERVAL = 10
 
 # -------------------------------------------------------------------
+# BEV 차선 추종 (bev_lane_controller.py, Phase1-43 기반)
+# -------------------------------------------------------------------
+# 고정 임계값 이진화 + 호모그래피. 카메라/마커가 바뀌면 bev_calib.json
+# 또는 BEV_SOURCE_POINTS를 다시 측정하세요.
+BEV_CALIB_FILE = "bev_calib.json"
+BEV_SOURCE_POINTS = (
+    (132.0, 260.0),
+    (549.0, 276.0),
+    (464.0, 111.0),
+    (226.5, 101.0),
+)
+BEV_MARKER_WIDTH_CM = 89.0
+BEV_MARKER_LENGTH_CM = 120.0
+BEV_PIXELS_PER_CM = 3.0
+BEV_WIDTH = 640
+BEV_HEIGHT = 520
+BEV_NEAR_MARGIN_PX = 40
+
+BEV_THRESHOLD_VALUE = 200
+BEV_GAUSSIAN_KERNEL = (5, 5)
+BEV_HORIZONTAL_KERNEL_WIDTH = 80
+BEV_HORIZONTAL_KERNEL_HEIGHT = 1
+BEV_VERTICAL_RECONNECT_HEIGHT = 9
+
+BEV_SCAN_BOTTOM_PX = 505
+BEV_SCAN_TOP_PX = 90
+BEV_SCAN_STEP_PX = 10
+BEV_SCAN_HALF_HEIGHT_PX = 3
+BEV_MIN_LINE_WIDTH_PX = 4
+BEV_MAX_LINE_WIDTH_PX = 80
+BEV_TRACK_MIN_X = 80
+BEV_TRACK_MAX_X = 600
+BEV_TRACK_WINDOW_PX = 45
+BEV_STEP_JUMP_PX = 20
+BEV_ADJACENT_MARGIN_PX = 12.0
+
+BEV_MIN_CENTER_POINTS = 12
+BEV_MIN_FIT_SPAN_CM = 60.0
+BEV_FIT_OUTLIER_CM = 5.0
+BEV_FIT_MAX_RESIDUAL_CM = 8.0
+BEV_CURVATURE_LIMIT_ABS = 0.0110
+BEV_MEMORY_FRAMES = 15
+
+BEV_FF_COUNTS_PER_CURVATURE = 4900.0
+BEV_FF_LIMIT = 80.0
+BEV_KE_COUNTS_PER_CM = 1.30
+BEV_CTE_LIMIT = 60.0
+BEV_KPSI_COUNTS_PER_DEG = 2.8
+BEV_PSI_LIMIT = 40.0
+BEV_STEER_RATE_PER_SECOND = 120.0
+
+# -------------------------------------------------------------------
 # 라이다 장애물 감지 (obstacle_detector.py)
 # -------------------------------------------------------------------
 # 아두이노/카메라와 별개로 라이다만 연결하는 시리얼 포트입니다.
